@@ -17,9 +17,12 @@ from core_balanta import (
     BalantaData,
     add_heading,
     add_paragraph,
+    describe_trajectory,
     fmt_money,
     fmt_pct,
+    fmt_ratio_pct,
     make_table,
+    pick_variant,
     safe_div,
 )
 from sheet_01_bilant import BilantResult
@@ -347,17 +350,45 @@ def render_sheet_02_cpp(doc: Document, bal: BalantaData, res: CPPResult) -> None
     ce0, ce1, ce2 = res.cheltuieli_exploatare
     re0, re1, re2 = res.rezultat_exploatare
     rn0, rn1, rn2 = res.rezultat_net
+    prod_vand2 = res.rd(2)[2]
+    ven_marf2 = res.rd(3)[2]
+    ch_pers2 = res.rd(18)[2]
+    ch_ext2 = res.rd(27)[2]
+    ch_mat2 = res.rd(13)[2] + res.rd(14)[2] + res.rd(16)[2]
 
-    add_paragraph(
-        doc,
-        f"Sinteză operațională: Cifra de afaceri netă este de {fmt_money(ca0)} lei în perioada de raportare 0, {fmt_money(ca1)} lei "
-        f"în perioada de raportare 1 și {fmt_money(ca2)} lei în perioada de raportare 2 ({fmt_pct(safe_div(ca2 - ca1, ca1)*100, plus_sign=True)} "
-        f"între perioada de raportare 1 și perioada de raportare 2). Veniturile din exploatare totalizează {fmt_money(ve2)} lei în perioada "
-        f"de raportare 2, devansând cheltuielile de exploatare ({fmt_money(ce2)} lei, formate din cheltuieli materiale, cheltuieli cu "
-        f"personalul de {fmt_money(res.rd(18)[2])} lei, prestații externe de {fmt_money(res.rd(27)[2])} lei și amortizări de "
-        f"{fmt_money(res.rd(21)[2])} lei). Rezultatul din exploatare este pozitiv în toate cele trei perioade ({fmt_money(re0)} lei, "
-        f"{fmt_money(re1)} lei și {fmt_money(re2)} lei), iar după luarea în calcul a rezultatului financiar ({fmt_money(res.rezultat_financiar[2])} lei) "
-        f"și a impozitului pe profit ({fmt_money(res.rd(65)[2])} lei), rezultatul net al exercițiului este de {fmt_money(rn0)} lei "
-        f"în perioada de raportare 0, {fmt_money(rn1)} lei în perioada de raportare 1 și {fmt_money(rn2)} lei în perioada de raportare 2 "
-        "(egal la cent cu soldul contului 121 din Bilanțul Contabil).",
+    traj_ca = describe_trajectory((ca0, ca1, ca2), bal, "s02_ca", "cifra de afaceri netă")
+    traj_rn = describe_trajectory((rn0, rn1, rn2), bal, "s02_rn", "rezultatul net al exercițiului")
+
+    if ven_marf2 > prod_vand2 * 1.5:
+        profil_ca = f"activitatea având un profil predominant comercial (vânzările de mărfuri de {fmt_money(ven_marf2)} lei generează {fmt_ratio_pct(safe_div(ven_marf2, ca2))} din cifra de afaceri a perioadei de raportare 2)"
+    elif prod_vand2 > ven_marf2 * 1.5:
+        profil_ca = f"activitatea fiind susținută prioritar de producția vândută și prestările de servicii ({fmt_money(prod_vand2)} lei, respectiv {fmt_ratio_pct(safe_div(prod_vand2, ca2))} din cifra de afaceri a perioadei de raportare 2)"
+    else:
+        profil_ca = f"structura veniturilor combinând echilibrat producția vândută ({fmt_money(prod_vand2)} lei) cu vânzările de mărfuri ({fmt_money(ven_marf2)} lei)"
+
+    cost_dom = (
+        f"cheltuielile materiale și cu mărfurile ({fmt_money(ch_mat2)} lei)"
+        if ch_mat2 >= max(ch_pers2, ch_ext2)
+        else (
+            f"cheltuielile cu personalul ({fmt_money(ch_pers2)} lei)"
+            if ch_pers2 >= ch_ext2
+            else f"serviciile executate de terți și alte cheltuieli de exploatare ({fmt_money(ch_ext2)} lei)"
+        )
     )
+
+    if re2 >= 0 and rn2 >= 0:
+        rez_msg = pick_variant(
+            bal,
+            "s02_rez_poz",
+            [
+                f"Veniturile din exploatare ({fmt_money(ve2)} lei în perioada de raportare 2) acoperă integral cheltuielile de exploatare ({fmt_money(ce2)} lei, în cadrul cărora ponderea principală revine la {cost_dom}), degajând un profit operațional de {fmt_money(re2)} lei. După deducerea rezultatului financiar ({fmt_money(res.rezultat_financiar[2])} lei) și a impozitului ({fmt_money(res.rd(65)[2])} lei), {traj_rn} (identic cu soldul contului 121).",
+                f"Raportul venituri/cheltuieli de exploatare în perioada de raportare 2 ({fmt_money(ve2)} lei vs. {fmt_money(ce2)} lei, unde elementul dominant de cost este reprezentat de {cost_dom}) asigură un excedent de exploatare de {fmt_money(re2)} lei; pe ansamblu, {traj_rn}.",
+                f"Operațiunile de exploatare din perioada de raportare 2 generează un rezultat pozitiv de {fmt_money(re2)} lei (venituri de {fmt_money(ve2)} lei față de cheltuieli de {fmt_money(ce2)} lei, dominate de {cost_dom}), iar la nivel final {traj_rn}.",
+            ],
+        )
+    else:
+        rez_msg = (
+            f"În perioada de raportare 2, raportul dintre veniturile de exploatare ({fmt_money(ve2)} lei) și cheltuielile de exploatare ({fmt_money(ce2)} lei, dominate de {cost_dom}) conduce la un rezultat operațional de {fmt_money(re2)} lei, iar {traj_rn}."
+        )
+
+    add_paragraph(doc, f"Diagnostic al performanței: Pe orizontul analizat, {traj_ca}, {profil_ca}. {rez_msg}")

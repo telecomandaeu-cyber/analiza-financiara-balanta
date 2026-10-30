@@ -10,6 +10,7 @@ Modulul central de extracție contabilă și formatare a raportului (core_balant
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from dataclasses import dataclass, field
@@ -788,3 +789,143 @@ def configure_document(doc: Document, bal: BalantaData) -> None:
 
         ftr = section.footer.paragraphs[0]
         add_page_number(ftr)
+
+
+# ==============================================================================
+# MOTOR DE DIVERSIFICARE NARATIVĂ ȘI DIAGNOSTIC CONDIȚIONAT PE VALORI
+# ==============================================================================
+def company_seed(bal: BalantaData, salt: str = "") -> int:
+    """
+    Calculează o amprentă numerică deterministă bazată pe datele de identificare
+    și sumele din balanța de verificare, astfel încât două balanțe diferite
+    să genereze formulări și structuri sintactice distincte.
+    """
+    t = bal.total_row
+    sig = (
+        f"{bal.cif}|{bal.denumire}|{bal.perioada}|"
+        f"{t.sid if t else 0:.2f}|{t.rld if t else 0:.2f}|"
+        f"{t.tsd if t else 0:.2f}|{t.sfd if t else 0:.2f}|{salt}"
+    )
+    digest = hashlib.sha256(sig.encode("utf-8")).hexdigest()
+    return int(digest[:12], 16)
+
+
+def pick_variant(bal: BalantaData, salt: str, variants: Sequence[str]) -> str:
+    """Selectează determinist o formulare din lista de variante pe baza amprentei balanței."""
+    if not variants:
+        return ""
+    idx = company_seed(bal, salt) % len(variants)
+    return variants[idx]
+
+
+def describe_trajectory(
+    vals: Sequence[float],
+    bal: BalantaData,
+    salt: str,
+    label: str,
+    is_ratio: bool = False,
+) -> str:
+    """
+    Generează o descriere analitică diversificată a evoluției unui indicator pe
+    cele trei perioade de raportare (0, 1 și 2), adaptată regimului de variație.
+    """
+    v0, v1, v2 = float(vals[0]), float(vals[1]), float(vals[2])
+    f0 = fmt_ratio_pct(v0) if is_ratio else f"{fmt_money(v0)} lei"
+    f1 = fmt_ratio_pct(v1) if is_ratio else f"{fmt_money(v1)} lei"
+    f2 = fmt_ratio_pct(v2) if is_ratio else f"{fmt_money(v2)} lei"
+
+    rel_total = safe_div(v2 - v0, abs(v0)) if abs(v0) > 1e-6 else 0.0
+    rel_str = fmt_ratio_pct(rel_total, plus_sign=True) if abs(v0) > 1e-6 else "n/a"
+
+    if abs(v2 - v0) <= max(abs(v0) * 0.015, 1e-4) and abs(v1 - v0) <= max(abs(v0) * 0.015, 1e-4):
+        return pick_variant(
+            bal,
+            f"traj_stab_{salt}",
+            [
+                f"{label} prezintă o evoluție stabilă pe întregul orizont analizat ({f0} în perioada de raportare 0, {f1} în perioada de raportare 1 și {f2} în perioada de raportare 2)",
+                f"{label} se menține la un palier cvasi-constant în cele trei perioade de raportare ({f0} -> {f1} -> {f2})",
+                f"nivelul înregistrat de {label} rămâne echilibrat și lipsit de fluctuații semnificative ({f0} în perioada 0 și {f2} în perioada 2)",
+                f"dinamica indicatorului {label} relevă conservarea volumului patrimonial în jurul valorii de {f2} ({f0} în perioada de raportare 0)",
+            ],
+        )
+
+    if v0 < v1 < v2:
+        if rel_total > 0.20:
+            return pick_variant(
+                bal,
+                f"traj_up_strong_{salt}",
+                [
+                    f"{label} consemnează o expansiune susținută de {rel_str}, urcând progresiv de la {f0} în perioada de raportare 0 la {f1} în perioada de raportare 1 și {f2} în perioada de raportare 2",
+                    f"evoluția indicatorului {label} este puternic ascendentă ({rel_str} pe ansamblul intervalului), avansând etapizat de la {f0} (perioada 0) la {f1} (perioada 1) și {f2} (perioada 2)",
+                    f"se remarcă o consolidare accelerată pentru {label}, care își majorează nivelul cu {rel_str}, de la {f0} în perioada de raportare 0 până la {f2} în perioada de raportare 2 (via {f1} în perioada 1)",
+                    f"traiectoria urmată de {label} indică o creștere continuă și viguroasă ({rel_str}), de la {f0} la începutul intervalului la {f1} în perioada de raportare 1 și {f2} la finele perioadei de raportare 2",
+                ],
+            )
+        return pick_variant(
+            bal,
+            f"traj_up_mod_{salt}",
+            [
+                f"{label} urmează o tendință pozitivă graduală ({rel_str}), crescând de la {f0} în perioada de raportare 0 la {f1} în perioada de raportare 1 și {f2} în perioada de raportare 2",
+                f"pe parcursul celor trei perioade de raportare, {label} înregistrează o apreciere moderată și constantă ({rel_str}), de la {f0} la {f1} și ulterior la {f2}",
+                f"indicatorul {label} evoluează favorabil în ambele subperioade ({f0} -> {f1} -> {f2}, reprezentând o variație cumulată de {rel_str})",
+                f"se observă o creștere organică a nivelului pentru {label}, care avansează de la {f0} în perioada de raportare 0 la {f2} în perioada de raportare 2 ({rel_str})",
+            ],
+        )
+
+    if v1 < v0 and v2 > v1:
+        if v2 >= v0:
+            return pick_variant(
+                bal,
+                f"traj_v_full_{salt}",
+                [
+                    f"{label} traversează o ajustare temporară în perioada de raportare 1 ({f1} față de {f0} în perioada 0), urmată de o redresare completă în perioada de raportare 2 până la {f2} ({rel_str} față de perioada 0)",
+                    f"după o contracție intermediară de la {f0} la {f1} în perioada de raportare 1, {label} revine pe creștere în perioada de raportare 2 și atinge {f2} ({rel_str} pe ansamblul intervalului)",
+                    f"profilul dinamic al indicatorului {label} este unul în «V»: scădere tranzitorie la {f1} în perioada 1, urmată de o expansiune la {f2} în perioada 2, depășind nivelul inițial de {f0}",
+                    f"deși în perioada de raportare 1 {label} s-a diminuat la {f1} (de la {f0}), revirimentul din perioada de raportare 2 ridică indicatorul la {f2} ({rel_str})",
+                ],
+            )
+        return pick_variant(
+            bal,
+            f"traj_v_part_{salt}",
+            [
+                f"{label} scade de la {f0} în perioada de raportare 0 la {f1} în perioada de raportare 1, recuperând apoi parțial în perioada de raportare 2 până la nivelul de {f2} ({rel_str} față de perioada 0)",
+                f"după reculul consemnat în perioada de raportare 1 ({f1} față de {f0}), {label} se redresează în perioada de raportare 2 la {f2} (variație cumulată de {rel_str})",
+                f"evoluția pentru {label} marchează o diminuare în prima parte a intervalului ({f0} -> {f1}), atenuată de creșterea din perioada de raportare 2 până la {f2}",
+                f"înregistrând un minim intermediar de {f1} în perioada de raportare 1, {label} își îmbunătățește poziția în perioada de raportare 2 la {f2} (față de {f0} în perioada 0)",
+            ],
+        )
+
+    if v1 > v0 and v2 < v1:
+        if v2 >= v0:
+            return pick_variant(
+                bal,
+                f"traj_peak_pos_{salt}",
+                [
+                    f"{label} atinge un maxim în perioada de raportare 1 ({f1}, în urcare de la {f0}), după care se temperează la {f2} în perioada de raportare 2, menținându-se însă cu {rel_str} peste nivelul din perioada 0",
+                    f"după vârful consemnat în perioada de raportare 1 ({f1}), {label} cunoaște o ajustare la {f2} în perioada de raportare 2, păstrând un avans net de {rel_str} față de perioada de raportare 0 ({f0})",
+                    f"traiectoria indicatorului {label} evidențiază o expansiune pronunțată în perioada 1 ({f1}) urmată de o stabilizare la {f2} în perioada 2 (peste valoarea inițială de {f0})",
+                    f"cu o creștere inițială de la {f0} la {f1} și o repliere marginală la {f2} în perioada de raportare 2, {label} încheie intervalul analizat pe un plus de {rel_str}",
+                ],
+            )
+        return pick_variant(
+            bal,
+            f"traj_peak_neg_{salt}",
+            [
+                f"{label} crește de la {f0} în perioada de raportare 0 la {f1} în perioada de raportare 1, dar se contractă ulterior la {f2} în perioada de raportare 2 ({rel_str} față de perioada 0)",
+                f"după o apreciere temporară în perioada de raportare 1 ({f1} față de {f0}), {label} coboară în perioada de raportare 2 la {f2} (variație totală {rel_str})",
+                f"dinamica pentru {label} indică o inversare de tendință în partea a doua a intervalului: avans de la {f0} la {f1}, urmat de o reducere până la {f2} în perioada de raportare 2",
+                f"atingând un nivel maxim de {f1} în perioada de raportare 1, {label} se ajustează în perioada de raportare 2 la {f2} ({rel_str} raportat la perioada 0)",
+            ],
+        )
+
+    return pick_variant(
+        bal,
+        f"traj_down_{salt}",
+        [
+            f"{label} urmează o traiectorie descendentă ({rel_str}), diminuându-se de la {f0} în perioada de raportare 0 la {f1} în perioada de raportare 1 și {f2} în perioada de raportare 2",
+            f"pe ansamblul celor trei perioade de raportare, {label} se reduce progresiv cu {rel_str}, trecând de la {f0} (perioada 0) la {f1} (perioada 1) și {f2} (perioada 2)",
+            f"se constată o contracție succesivă a indicatorului {label}, al cărui nivel coboară de la {f0} în perioada de raportare 0 până la {f2} în perioada de raportare 2 ({rel_str})",
+            f"evoluția consemnată de {label} este una de restrângere treptată ({f0} -> {f1} -> {f2}, echivalentul unei modificări relative de {rel_str})",
+        ],
+    )
+

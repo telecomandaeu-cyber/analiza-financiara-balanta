@@ -21,9 +21,11 @@ from core_balanta import (
     calc_growth_rate,
     calc_index,
     calc_ritm_mediu,
+    describe_trajectory,
     fmt_money,
     fmt_ratio_pct,
     make_table,
+    pick_variant,
 )
 from sheet_02_cpp import CPPResult
 from sheet_13_sig import SIGResult
@@ -142,14 +144,22 @@ def render_sheet_14_caf(doc: Document, bal: BalantaData, cpp: CPPResult, sig: SI
         font_size=7.7,
     )
 
-    g_caf_10 = (res.caf_deductiv[1] - res.caf_deductiv[0]) / res.caf_deductiv[0] if abs(res.caf_deductiv[0]) > 1e-6 else 0.0
-    g_caf_21 = (res.caf_deductiv[2] - res.caf_deductiv[1]) / res.caf_deductiv[1] if abs(res.caf_deductiv[1]) > 1e-6 else 0.0
-    add_paragraph(
-        doc,
-        f"Sinteză CAF: Metoda deductivă și metoda aditivă conduc la aceeași valoare a Capacității de Autofinanțare: "
-        f"{fmt_money(res.caf_deductiv[0])} lei în perioada de raportare 0, {fmt_money(res.caf_deductiv[1])} lei în perioada de "
-        f"raportare 1 ({fmt_ratio_pct(g_caf_10, plus_sign=True)} față de perioada de raportare 0) și {fmt_money(res.caf_deductiv[2])} lei "
-        f"în perioada de raportare 2 ({fmt_ratio_pct(g_caf_21, plus_sign=True)} față de perioada de raportare 1, ritm mediu "
-        f"{fmt_ratio_pct(res.ritm_ded)}). Acest surplus monetar intern asigură resursele proprii necesare pentru autofinanțarea "
-        "activității curente și a investițiilor.",
-    )
+    traj_caf = describe_trajectory(res.caf_deductiv, bal, "s14_caf", "Capacitatea de autofinanțare (CAF)")
+    amort2 = cpp.rd(21)[2]
+    rn2 = sig.rezultat_net[2]
+
+    if res.caf_deductiv[2] > 0:
+        s14_msg = pick_variant(
+            bal,
+            "s14_poz",
+            [
+                f"Sinteză CAF: Atât metoda deductivă (pornind de la EBE), cât și metoda aditivă (pornind de la profitul net de {fmt_money(rn2)} lei plus amortizarea nemonetară de {fmt_money(amort2)} lei în perioada de raportare 2) conduc la rezultate identice; pe ansamblul intervalului, {traj_caf} (ritm mediu {fmt_ratio_pct(res.ritm_ded)}), generând un surplus monetar intern robust pentru finanțarea investițiilor și rambursarea datoriilor.",
+                f"Evaluarea potențialului de autofinanțare: Concordanța dintre abordarea deductivă și cea aditivă este deplină în toate cele trei perioade de raportare; {traj_caf}, susținută în perioada de raportare 2 de rezultatul net ({fmt_money(rn2)} lei) și de cheltuielile calculate cu amortizarea ({fmt_money(amort2)} lei).",
+                f"Diagnostic de autofinanțare: Egalitatea CAF deductiv = CAF aditiv se verifică la cent; {traj_caf} (ritm mediu de variație {fmt_ratio_pct(res.ritm_ded)}), confirmând capacitatea operațiunilor curente de a degaja lichidități proprii ({fmt_money(res.caf_deductiv[2])} lei în perioada de raportare 2).",
+            ],
+        )
+    else:
+        s14_msg = (
+            f"Sinteză CAF: Metoda deductivă și metoda aditivă conduc la aceeași valoare în toate perioadele; {traj_caf}, semnalând necesitatea redresării marjelor operaționale pentru refacerea surplusului monetar intern."
+        )
+    add_paragraph(doc, s14_msg)

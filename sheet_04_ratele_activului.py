@@ -19,9 +19,11 @@ from core_balanta import (
     add_paragraph,
     calc_delta,
     calc_index,
+    describe_trajectory,
     fmt_money,
     fmt_ratio_pct,
     make_table,
+    pick_variant,
     safe_div,
 )
 from sheet_02_cpp import CPPResult
@@ -278,15 +280,38 @@ def render_sheet_04_ratele_activului(
         font_size=7.7,
     )
 
+    traj_rai = describe_trajectory(res.r_ai, bal, "s04_rai", "rata activelor imobilizate (R_AI)", is_ratio=True)
+    r_stoc2 = res.sub_blocks[3].rate1_vals[2]
+    r_cre2 = res.sub_blocks[4].rate1_vals[2]
+    r_disp2 = res.sub_blocks[5].rate1_vals[2]
+
+    if "favorabil" in res.semnal_ai[1] and "favorabil" in res.semnal_ac[1]:
+        cor_msg = pick_variant(
+            bal,
+            "s04_cor_both_ok",
+            [
+                f"Corelația dinamică în perioada de raportare 2 este dublu favorabilă: indicele cifrei de afaceri (I_CA = {fmt_ratio_pct(i_ca[1])}) depășește atât indicele activelor imobilizate (I_AI = {fmt_ratio_pct(i_ai[1])}), cât și pe cel al activelor circulante (I_AC = {fmt_ratio_pct(i_ac[1])}), atestând o accelerare a vitezei de rotație și o exploatare intensivă a patrimoniului.",
+                f"Compararea ritmurilor de creștere între perioada de raportare 1 și perioada de raportare 2 confirmă devansarea dinamicii activelor (I_AI = {fmt_ratio_pct(i_ai[1])}, I_AC = {fmt_ratio_pct(i_ac[1])}) de către cifra de afaceri (I_CA = {fmt_ratio_pct(i_ca[1])}), generând semnal favorabil pe ambele paliere.",
+            ],
+        )
+    elif "favorabil" not in res.semnal_ai[1] and "favorabil" not in res.semnal_ac[1]:
+        cor_msg = pick_variant(
+            bal,
+            "s04_cor_both_bad",
+            [
+                f"În intervalul P2/P1, indicele cifrei de afaceri (I_CA = {fmt_ratio_pct(i_ca[1])}) se situează sub indicii de creștere ai activelor imobilizate ({fmt_ratio_pct(i_ai[1])}) și circulante ({fmt_ratio_pct(i_ac[1])}), semnalând o acumulare de active al căror potențial comercial urmează a fi valorificat în exercițiile viitoare.",
+                f"Dinamica dintre perioada de raportare 1 și perioada de raportare 2 indică o creștere a bazei de active (I_AI = {fmt_ratio_pct(i_ai[1])}, I_AC = {fmt_ratio_pct(i_ac[1])}) mai rapidă decât cea a cifrei de afaceri (I_CA = {fmt_ratio_pct(i_ca[1])}), ceea ce temperează temporar randamentul mijloacelor economice.",
+            ],
+        )
+    else:
+        cor_msg = (
+            f"Raportul dintre dinamica cifrei de afaceri (I_CA = {fmt_ratio_pct(i_ca[1])}) și cea a activelor în perioada de raportare 2 este mixt: {res.semnal_ai[1]} pentru activele imobilizate (I_AI = {fmt_ratio_pct(i_ai[1])}) și {res.semnal_ac[1]} pentru activele circulante (I_AC = {fmt_ratio_pct(i_ac[1])})."
+        )
+
     add_paragraph(
         doc,
-        f"Interpretare structurală: Ponderea activelor imobilizate în activul total (R_AI) evoluează de la {fmt_ratio_pct(res.r_ai[0])} "
-        f"în perioada de raportare 0 la {fmt_ratio_pct(res.r_ai[2])} în perioada de raportare 2 ({fmt_ratio_pct(res.r_ai[2] - res.r_ai[0], plus_sign=True)}), "
-        f"imobilizările corporale deținând {fmt_ratio_pct(res.sub_blocks[1].rate1_vals[2])} din totalul imobilizărilor. Activele circulante "
-        f"reprezintă {fmt_ratio_pct(res.r_ac[2])} din activul total în perioada de raportare 2 ({fmt_money(bf.active_circulante[2])} lei), "
-        f"în cadrul cărora ponderea disponibilităților bănești crește de la {fmt_ratio_pct(res.sub_blocks[5].rate1_vals[0])} în perioada "
-        f"de raportare 0 la {fmt_ratio_pct(res.sub_blocks[5].rate1_vals[2])} în perioada de raportare 2. Între perioada de raportare 1 și "
-        f"perioada de raportare 2, indicele cifrei de afaceri (I_CA = {fmt_ratio_pct(i_ca[1])}) devansează atât indicele activelor "
-        f"imobilizate ({fmt_ratio_pct(i_ai[1])} -> {res.semnal_ai[1]}), cât și indicele activelor circulante ({fmt_ratio_pct(i_ac[1])} -> "
-        f"{res.semnal_ac[1]}), confirmând creșterea vitezei de rotație și a randamentului utilizării activelor.",
+        f"Analiza structurii activului: Pe ansamblul intervalului, {traj_rai}, în timp ce rata activelor circulante (R_AC) se situează la "
+        f"{fmt_ratio_pct(res.r_ac[2])} în perioada de raportare 2 ({fmt_money(bf.active_circulante[2])} lei). În structura internă a activelor "
+        f"circulante din perioada de raportare 2, stocurile dețin {fmt_ratio_pct(r_stoc2)}, creanțele reprezintă {fmt_ratio_pct(r_cre2)}, "
+        f"iar disponibilitățile bănești și investițiile pe termen scurt însumează {fmt_ratio_pct(r_disp2)}. {cor_msg}",
     )

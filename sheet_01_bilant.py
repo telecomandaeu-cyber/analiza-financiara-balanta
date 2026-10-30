@@ -19,9 +19,12 @@ from core_balanta import (
     BalantaData,
     add_heading,
     add_paragraph,
+    describe_trajectory,
     fmt_money,
     fmt_pct,
+    fmt_ratio_pct,
     make_table,
+    pick_variant,
     safe_div,
 )
 
@@ -322,18 +325,56 @@ def render_sheet_01_bilant(doc: Document, bal: BalantaData, res: BilantResult) -
     dts0, dts1, dts2 = res.rd(11)
     dtl0, dtl1, dtl2 = res.rd(14)
     cp0, cp1, cp2 = res.rd(39)
+    disp2 = res.rd(8)[2]
+    stoc2 = res.rd(5)[2]
+    creante2 = res.rd(6)[2]
 
-    add_paragraph(
-        doc,
-        f"Sinteză patrimonială: Totalul Activului este egal cu Totalul Pasivului în toate cele trei perioade de raportare "
-        f"({fmt_money(ta0)} lei în perioada de raportare 0, {fmt_money(ta1)} lei în perioada de raportare 1 și {fmt_money(ta2)} lei "
-        f"în perioada de raportare 2). Activele imobilizate nete înregistrează o variație de {fmt_money(ai2 - ai0)} lei "
-        f"({fmt_pct(safe_div(ai2 - ai0, ai0)*100, plus_sign=True)}) între perioada de raportare 0 ({fmt_money(ai0)} lei) și perioada de "
-        f"raportare 2 ({fmt_money(ai2)} lei), în timp ce activele circulante evoluează de la {fmt_money(ac0)} lei la {fmt_money(ac2)} lei, "
-        f"cu disponibilități bănești de {fmt_money(res.rd(8)[2])} lei în perioada de raportare 2. Pe latura pasivului, capitalurile "
-        f"proprii sunt de {fmt_money(cp0)} lei în perioada de raportare 0, {fmt_money(cp1)} lei în perioada de raportare 1 și "
-        f"{fmt_money(cp2)} lei în perioada de raportare 2 ({fmt_pct(safe_div(cp2 - cp0, cp0)*100, plus_sign=True)}), datoriile pe termen "
-        f"scurt totalizează {fmt_money(dts2)} lei ({fmt_pct(safe_div(dts2 - dts0, dts0)*100, plus_sign=True)} față de perioada de raportare 0), "
-        f"iar datoriile pe termen lung scad cu {fmt_pct(safe_div(dtl2 - dtl0, dtl0)*100, plus_sign=True)} (de la {fmt_money(dtl0)} lei la "
-        f"{fmt_money(dtl2)} lei).",
-    )
+    traj_ta = describe_trajectory((ta0, ta1, ta2), bal, "s01_ta", "volumul total al activului (egal cu pasivul total)")
+    traj_cp = describe_trajectory((cp0, cp1, cp2), bal, "s01_cp", "capitalul propriu (activul net contabil)")
+
+    pond_ai2 = safe_div(ai2, ta2)
+    if pond_ai2 >= 0.50:
+        profil_activ = pick_variant(
+            bal,
+            "s01_prof_ai",
+            [
+                f"Structura patrimonială din perioada de raportare 2 este preponderent imobilizată (activele fixe nete de {fmt_money(ai2)} lei dețin {fmt_ratio_pct(pond_ai2)} din activ), reflectând o bază tehnică și investițională consistentă, completată de active circulante de {fmt_money(ac2)} lei.",
+                f"Arhitectura activului în perioada de raportare 2 evidențiază dominanța imobilizărilor nete ({fmt_money(ai2)} lei, respectiv {fmt_ratio_pct(pond_ai2)} din patrimoniu), în timp ce activele curente însumează {fmt_money(ac2)} lei (din care trezorerie {fmt_money(disp2)} lei).",
+                f"Alocarea plasamentelor patrimoniale la finele perioadei de raportare 2 relevă o intensitate ridicată a capitalului fix ({fmt_money(ai2)} lei, {fmt_ratio_pct(pond_ai2)} din total), secondată de active circulante de {fmt_money(ac2)} lei.",
+            ],
+        )
+    else:
+        dom_ac = "disponibilitățile bănești" if disp2 >= max(stoc2, creante2) else ("creanțele comerciale și diverse" if creante2 >= stoc2 else "stocurile operaționale")
+        profil_activ = pick_variant(
+            bal,
+            "s01_prof_ac",
+            [
+                f"Configurația activului în perioada de raportare 2 este orientată spre ciclul operațional curent: activele circulante ({fmt_money(ac2)} lei, pilonul principal fiind {dom_ac}) dețin {fmt_ratio_pct(1.0 - pond_ai2)} din patrimoniu, iar imobilizările nete însumează {fmt_money(ai2)} lei ({fmt_ratio_pct(pond_ai2)}).",
+                f"În perioada de raportare 2, mobilitatea patrimonială este ridicată, activele circulante ({fmt_money(ac2)} lei, susținute prioritar de {dom_ac}) devansând activele imobilizate nete ({fmt_money(ai2)} lei, respectiv {fmt_ratio_pct(pond_ai2)} din activ).",
+                f"Ponderea majoritară în activul perioadei de raportare 2 revine elementelor circulante ({fmt_money(ac2)} lei, dominate de {dom_ac}), în timp ce baza imobilizată netă se cifrează la {fmt_money(ai2)} lei ({fmt_ratio_pct(pond_ai2)} din total).",
+            ],
+        )
+
+    if cp2 < 0:
+        pasiv_msg = f"Pe latura resurselor, deși {traj_cp}, valoarea negativă a capitalurilor proprii indică un deficit de acoperire patrimonială, finanțarea fiind asigurată din datorii curente ({fmt_money(dts2)} lei) și datorii pe termen lung ({fmt_money(dtl2)} lei)."
+    elif dtl2 > 0:
+        pasiv_msg = pick_variant(
+            bal,
+            "s01_pas_dtl",
+            [
+                f"În planul finanțării, {traj_cp}, iar obligațiile față de terți în perioada de raportare 2 se împart între datorii curente exigibile sub un an ({fmt_money(dts2)} lei) și împrumuturi pe termen lung ({fmt_money(dtl2)} lei).",
+                f"Sub aspectul surselor de finanțare, {traj_cp}; complementar, datoriile pe termen scurt se situează la {fmt_money(dts2)} lei în perioada de raportare 2, iar datoriile peste un an la {fmt_money(dtl2)} lei.",
+                f"Pe partea de pasiv, {traj_cp}, resursele împrumutate însumând în perioada de raportare 2 datorii curente de {fmt_money(dts2)} lei și datorii pe termen lung de {fmt_money(dtl2)} lei.",
+            ],
+        )
+    else:
+        pasiv_msg = pick_variant(
+            bal,
+            "s01_pas_nodtl",
+            [
+                f"În planul resurselor, {traj_cp}; societatea nu înregistrează datorii pe termen lung în perioada de raportare 2 (0,00 lei), obligațiile față de terți fiind integral pe termen scurt ({fmt_money(dts2)} lei).",
+                f"Sub aspectul structurii pasivului, {traj_cp}, în timp ce datoriile pe termen lung sunt nule în perioada de raportare 2, iar angajamentele curente sub un an totalizează {fmt_money(dts2)} lei.",
+            ],
+        )
+
+    add_paragraph(doc, f"Diagnostic bilanțier: În conformitate cu principiul dublei reprezentări, {traj_ta}. {profil_activ} {pasiv_msg}")

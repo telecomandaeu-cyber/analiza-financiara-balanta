@@ -20,6 +20,7 @@ from core_balanta import (
     fmt_money,
     fmt_ratio_pct,
     make_table,
+    pick_variant,
     safe_div,
 )
 from sheet_02_cpp import CPPResult
@@ -101,13 +102,26 @@ def render_sheet_16_efectul_indatorare(
         font_size=7.8,
     )
 
-    add_paragraph(
-        doc,
-        f"Evaluarea efectului de levier: În perioada de raportare 2, rata rentabilității capitalurilor proprii este "
-        f"Re = {fmt_ratio_pct(res.re_rate[2])}, iar rata medie a dobânzii aferente creditelor bancare pe termen lung este "
-        f"Rd = {fmt_ratio_pct(res.rd_rate[2])}. Diferențialul de rentabilitate (Re - Rd = "
-        f"{fmt_ratio_pct(res.re_rate[2] - res.rd_rate[2], plus_sign=True)}) determină un efect de levier financiar de "
-        f"{fmt_ratio_pct(res.efect_levier[0], plus_sign=True)} în perioada de raportare 0, "
-        f"{fmt_ratio_pct(res.efect_levier[1], plus_sign=True)} în perioada de raportare 1 și "
-        f"{fmt_ratio_pct(res.efect_levier[2], plus_sign=True)} în perioada de raportare 2 ({res.verdict[2]}).",
-    )
+    if res.credit[2] <= 1e-6:
+        s16_msg = pick_variant(
+            bal,
+            "s16_nocred",
+            [
+                f"Evaluarea efectului de levier: În perioada de raportare 2, soldul creditelor bancare pe termen lung (ct. 162) este nul (0,00 lei), iar rata rentabilității capitalurilor proprii este Re = {fmt_ratio_pct(res.re_rate[2])}; în absența îndatorării bancare purtătoare de dobândă, efectul de levier în perioada de raportare 2 este neutru ({fmt_ratio_pct(res.efect_levier[2], plus_sign=True)}).",
+                f"Analiza levierului financiar: Întrucât societatea nu utilizează credite bancare pe termen lung în perioada de raportare 2 (sold ct. 162 = 0,00 lei), rentabilitatea financiară (Re = {fmt_ratio_pct(res.re_rate[2])}) provine exclusiv din exploatarea capitalurilor proprii ({fmt_money(res.cp[2])} lei), fără costuri de dobândă bancară pe termen lung.",
+            ],
+        )
+    elif res.re_rate[2] >= res.rd_rate[2]:
+        s16_msg = pick_variant(
+            bal,
+            "s16_poz",
+            [
+                f"Evaluarea efectului de levier: În perioada de raportare 2, rentabilitatea capitalurilor (Re = {fmt_ratio_pct(res.re_rate[2])}) depășește rata medie a dobânzii creditului bancar (Rd = {fmt_ratio_pct(res.rd_rate[2])}), ecartul pozitiv (Re - Rd = {fmt_ratio_pct(res.re_rate[2] - res.rd_rate[2], plus_sign=True)}) generând un efect de levier favorabil de {fmt_ratio_pct(res.efect_levier[2], plus_sign=True)} ({res.verdict[2]}).",
+                f"Diagnostic privind îndatorarea bancară: Diferențialul pozitiv dintre rentabilitatea obținută (Re = {fmt_ratio_pct(res.re_rate[2])}) și costul mediu al creditului în sold de {fmt_money(res.credit[2])} lei (Rd = {fmt_ratio_pct(res.rd_rate[2])}) imprimă un efect de levier financiar pozitiv ({fmt_ratio_pct(res.efect_levier[0], plus_sign=True)} în perioada 0, {fmt_ratio_pct(res.efect_levier[1], plus_sign=True)} în perioada 1 și {fmt_ratio_pct(res.efect_levier[2], plus_sign=True)} în perioada 2), amplificând câștigul proprietarilor.",
+            ],
+        )
+    else:
+        s16_msg = (
+            f"Evaluarea efectului de levier: În perioada de raportare 2, rata medie a dobânzii bancare (Rd = {fmt_ratio_pct(res.rd_rate[2])}) depășește rata rentabilității (Re = {fmt_ratio_pct(res.re_rate[2])}), diferențialul negativ ({fmt_ratio_pct(res.re_rate[2] - res.rd_rate[2], plus_sign=True)}) determinând un efect de măciucă de {fmt_ratio_pct(res.efect_levier[2], plus_sign=True)} ({res.verdict[2]})."
+        )
+    add_paragraph(doc, s16_msg)

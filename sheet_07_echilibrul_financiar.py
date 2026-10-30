@@ -19,9 +19,11 @@ from core_balanta import (
     add_paragraph,
     calc_delta,
     calc_index,
+    describe_trajectory,
     fmt_money,
     fmt_ratio_pct,
     make_table,
+    pick_variant,
 )
 from sheet_03_bilant_financiar import BilantFinanciarResult
 from sheet_05_structura_financiara import StructuraFinanciaraResult
@@ -147,13 +149,34 @@ def render_sheet_07_echilibrul_financiar(
         font_size=7.7,
     )
 
+    traj_fr = describe_trajectory(ef.fr_sus, bal, "s07_fr", "Fondul de rulment patrimonial (FR)")
+    traj_tn = describe_trajectory(ef.tn, bal, "s07_tn", "Trezoreria netă (TN = FR - NFR)")
+
+    if ef.fr_sus[2] >= 0 and ef.nfr[2] >= 0 and ef.tn[2] >= 0:
+        eq_msg = pick_variant(
+            bal,
+            "s07_eq_1",
+            [
+                f"În perioada de raportare 2, excedentul de resurse permanente (FR = {fmt_money(ef.fr_sus[2])} lei, din care Fond de rulment propriu FRP = {fmt_money(ef.frp[2])} lei) finanțează integral Necesarul de fond de rulment (NFR = {fmt_money(ef.nfr[2])} lei) și degajă o trezorerie netă pozitivă ({fmt_money(ef.tn[2])} lei -> {ef.diag_tn[2]}).",
+                f"Configurația din perioada de raportare 2 (FR = {fmt_money(ef.fr_sus[2])} lei > NFR = {fmt_money(ef.nfr[2])} lei > 0) atestă că întregul decalaj de finanțare al stocurilor și creanțelor este acoperit din fondul de rulment, lăsând disponibilități bănești nete excedentare de {fmt_money(ef.tn[2])} lei.",
+            ],
+        )
+    elif ef.fr_sus[2] >= 0 and ef.nfr[2] < 0 and ef.tn[2] >= 0:
+        eq_msg = pick_variant(
+            bal,
+            "s07_eq_2",
+            [
+                f"În perioada de raportare 2, Fondul de rulment pozitiv ({fmt_money(ef.fr_sus[2])} lei, FRP = {fmt_money(ef.frp[2])} lei) se cumulează cu o resursă netă atrasă din exploatare (NFR negativ = {fmt_money(ef.nfr[2])} lei), amplificând trezoreria netă la {fmt_money(ef.tn[2])} lei.",
+                f"Valoarea negativă a NFR în perioada de raportare 2 ({fmt_money(ef.nfr[2])} lei) arată că datoriile de exploatare depășesc activele circulante non-monetare, degajând resurse suplimentare care se adaugă Fondului de rulment ({fmt_money(ef.fr_sus[2])} lei) în formarea trezoreriei nete ({fmt_money(ef.tn[2])} lei).",
+            ],
+        )
+    else:
+        eq_msg = (
+            f"În perioada de raportare 2, raportul dintre Fondul de rulment (FR = {fmt_money(ef.fr_sus[2])} lei, FRP = {fmt_money(ef.frp[2])} lei -> {ef.diag_fr[2]}) și Necesarul de fond de rulment (NFR = {fmt_money(ef.nfr[2])} lei -> {ef.diag_nfr[2]}) determină o Trezorerie netă de {fmt_money(ef.tn[2])} lei ({ef.diag_tn[2]})."
+        )
+
     add_paragraph(
         doc,
-        f"Diagnostic de echilibru: Fondul de rulment determinat prin partea de sus a bilanțului este egal la cent cu cel determinat "
-        f"prin partea de jos ({fmt_money(ef.fr_sus[0])} lei în perioada de raportare 0, {fmt_money(ef.fr_sus[1])} lei în perioada de "
-        f"raportare 1 și {fmt_money(ef.fr_sus[2])} lei în perioada de raportare 2 -> diagnostic {ef.diag_fr[2]}). Necesarul de fond "
-        f"de rulment (NFR) este de {fmt_money(ef.nfr[0])} lei în perioada de raportare 0, {fmt_money(ef.nfr[1])} lei în perioada de "
-        f"raportare 1 și {fmt_money(ef.nfr[2])} lei în perioada de raportare 2 (diagnostic {ef.diag_nfr[2]}), iar Trezoreria netă "
-        f"(TN = FR - NFR) este pozitivă în toate cele trei perioade de raportare ({fmt_money(ef.tn[0])} lei, {fmt_money(ef.tn[1])} lei "
-        f"și {fmt_money(ef.tn[2])} lei -> diagnostic {ef.diag_tn[2]}).",
+        f"Diagnostic de echilibru financiar: Egalitatea dintre abordarea patrimonială de sus și cea de jos a bilanțului este "
+        f"verificată în fiecare perioadă; {traj_fr}, în timp ce {traj_tn}. {eq_msg}",
     )

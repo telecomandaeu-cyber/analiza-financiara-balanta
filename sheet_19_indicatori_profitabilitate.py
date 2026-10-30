@@ -24,6 +24,7 @@ from core_balanta import (
     fmt_pct,
     fmt_ratio_pct,
     make_table,
+    pick_variant,
     safe_div,
 )
 from sheet_02_cpp import CPPResult
@@ -130,12 +131,15 @@ def render_sheet_19_indicatori_profitabilitate(
         font_size=7.8,
     )
 
-    add_paragraph(
-        doc,
-        f"Sinteză privind rentabilitatea: Rentabilitatea economică a activelor (ROA) se dublează pe intervalul analizat, urcând de la "
-        f"{fmt_pct(res.roa[0])} în perioada de raportare 0 la {fmt_pct(res.roa[1])} în perioada de raportare 1 și {fmt_pct(res.roa[2])} "
-        f"în perioada de raportare 2 (+9,05 pp). Rentabilitatea financiară (ROE) se menține la un nivel ridicat în toate cele trei "
-        f"perioade de raportare ({fmt_pct(res.roe[0])}, {fmt_pct(res.roe[1])} și {fmt_pct(res.roe[2])}), iar la fiecare 100 lei de "
-        f"cheltuieli totale angajate în perioada de raportare 2 societatea obține un profit net de {fmt_num(res.rent_resurse[2], 2)} lei "
-        f"(rentabilitatea resurselor consumate = {fmt_pct(res.rent_resurse[2])}, rentabilitatea comercială ROS = {fmt_pct(res.ros[2])}).",
+    d_roa = res.roa[2] - res.roa[0]
+    d_roe = res.roe[2] - res.roe[0]
+    s19_msg = pick_variant(
+        bal,
+        "s19_prof",
+        [
+            f"Sinteză privind rentabilitatea: Rentabilitatea economică a activelor (ROA) evoluează de la {fmt_pct(res.roa[0])} în perioada de raportare 0 la {fmt_pct(res.roa[1])} în perioada de raportare 1 și {fmt_pct(res.roa[2])} în perioada de raportare 2 ({fmt_pct(d_roa, plus_sign=True)} pp față de perioada 0), în timp ce rentabilitatea financiară (ROE) înregistrează {fmt_pct(res.roe[0])}, {fmt_pct(res.roe[1])} și {fmt_pct(res.roe[2])} ({fmt_pct(d_roe, plus_sign=True)} pp). În perioada de raportare 2, la fiecare 100 lei de cheltuieli totale angajate societatea obține un rezultat net de {fmt_num(res.rent_resurse[2], 2)} lei (rentabilitatea resurselor consumate = {fmt_pct(res.rent_resurse[2])}, rentabilitatea comercială ROS = {fmt_pct(res.ros[2])}).",
+            f"Evaluarea ratelor de eficiență: În perioada de raportare 2, randamentul activelor totale (ROA) este de {fmt_pct(res.roa[2])} (față de {fmt_pct(res.roa[0])} în perioada 0), remunerarea capitalurilor proprii (ROE) atinge {fmt_pct(res.roe[2])} (față de {fmt_pct(res.roe[0])} în perioada 0), iar marja comercială operațională (ROS) se situează la {fmt_pct(res.ros[2])}, cu o rentabilitate a resurselor consumate de {fmt_pct(res.rent_resurse[2])} și o marjă netă din vânzări de {fmt_pct(res.marja_neta[2])}.",
+            f"Diagnostic de profitabilitate: Tabloul ratelor de rentabilitate din perioada de raportare 2 evidențiază o rentabilitate economică ROA = {fmt_pct(res.roa[2])}, o rentabilitate financiară ROE = {fmt_pct(res.roe[2])}, o rentabilitate comercială ROS = {fmt_pct(res.ros[2])} și o marjă brută din vânzări de {fmt_pct(res.marja_bruta[2])}, reflectând eficiența transformării resurselor consumate ({fmt_pct(res.rent_resurse[2])}) în profit net.",
+        ],
     )
+    add_paragraph(doc, s19_msg)

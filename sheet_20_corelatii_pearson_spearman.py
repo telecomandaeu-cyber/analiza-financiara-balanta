@@ -20,7 +20,9 @@ from core_balanta import (
     add_paragraph,
     fmt_money,
     fmt_num,
+    fmt_pct,
     make_table,
+    pick_variant,
 )
 from sheet_01_bilant import BilantResult
 from sheet_02_cpp import CPPResult
@@ -207,12 +209,32 @@ def render_sheet_20_corelatii(doc: Document, bal: BalantaData, res: CorelatiiRes
     )
 
     nb_opt = sum(1 for p in res.pairs if p.calificativ == "Corelație optimă")
-    add_paragraph(
-        doc,
-        f"Sinteză statistică: Din totalul celor 24 de perechi de indicatori economico-financiari evaluate pe seria celor trei "
-        f"perioade de raportare (n = 3), {nb_opt} din 24 de perechi (95,8%) obțin calificativul «Corelație optimă» (|r| >= 0,75). "
-        "Corelațiile directe perfecte (r_s = +1,00 și r > +0,95) între lichiditate și solvabilitate (r = +0,9989), capitaluri proprii "
-        "și capitaluri permanente (r = +0,9912), respectiv cifra de afaceri și scorul Altman (r = +0,9951), împreună cu corelațiile "
-        "inverse puternice între capitalurile proprii și datorii (r = -0,9998 pe termen lung și r = -0,9580 pe termen scurt), "
-        "confirmă că dezîndatorarea și capitalizarea profitului net consolidează direct solvabilitatea societății.",
+    nb_buna = sum(1 for p in res.pairs if p.calificativ == "Corelație bună")
+    pct_opt = (nb_opt / len(res.pairs)) * 100.0 if res.pairs else 0.0
+
+    pos_sorted = sorted(res.pairs, key=lambda x: x.pearson_r, reverse=True)
+    neg_sorted = sorted(res.pairs, key=lambda x: x.pearson_r)
+    top_pos1 = pos_sorted[0] if pos_sorted else None
+    top_pos2 = pos_sorted[1] if len(pos_sorted) > 1 else None
+    top_neg1 = neg_sorted[0] if neg_sorted else None
+
+    pos_txt = (
+        f"«{top_pos1.pair_title}» (r = {fmt_num(top_pos1.pearson_r, 4)}, r_s = {fmt_num(top_pos1.spearman_rs, 2)}) și «{top_pos2.pair_title}» (r = {fmt_num(top_pos2.pearson_r, 4)})"
+        if top_pos1 and top_pos2
+        else "indicatorii patrimoniali"
     )
+    neg_txt = (
+        f"«{top_neg1.pair_title}» (r = {fmt_num(top_neg1.pearson_r, 4)}, r_s = {fmt_num(top_neg1.spearman_rs, 2)})"
+        if top_neg1 and top_neg1.pearson_r < 0
+        else "perechile cu evoluție divergentă"
+    )
+
+    s20_msg = pick_variant(
+        bal,
+        "s20_corr",
+        [
+            f"Sinteză statistică: Din totalul celor {len(res.pairs)} de perechi de indicatori evaluate pe seria celor trei perioade de raportare (n = 3), {nb_opt} perechi ({fmt_pct(pct_opt)}) obțin calificativul «Corelație optimă» (|r| >= 0,75), iar {nb_buna} perechi obțin «Corelație bună». Cele mai puternice legături directe se înregistrează între {pos_txt}, în timp ce cea mai pronunțată relație inversă apare la perechea {neg_txt}, reflectând coerența evoluțiilor patrimoniale și de performanță.",
+            f"Evaluarea matricii de corelație: Pe ansamblul celor {len(res.pairs)} de legături testate parametric (Pearson r) și neparametric (Spearman r_s), {nb_opt} cupluri de indicatori ({fmt_pct(pct_opt)}) prezintă o intensitate stocastică foarte puternică (|r| >= 0,75). Se evidențiază corelațiile pozitive de vârf {pos_txt} și corelația inversă {neg_txt}, care confirmă sincronizarea dintre dinamica activității și structura de finanțare.",
+        ],
+    )
+    add_paragraph(doc, s20_msg)

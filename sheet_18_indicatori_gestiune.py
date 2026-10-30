@@ -22,6 +22,7 @@ from core_balanta import (
     fmt_num,
     fmt_ratio_pct,
     make_table,
+    pick_variant,
     safe_div,
 )
 from sheet_02_cpp import CPPResult
@@ -131,12 +132,24 @@ def render_sheet_18_indicatori_gestiune(
         font_size=7.7,
     )
 
-    add_paragraph(
-        doc,
-        f"Eficiența gestiunii ciclului operațional: Toți indicatorii de rotație consemnează o accelerare pronunțată între perioada "
-        f"de raportare 0 și perioada de raportare 2. Durata medie de rotație a stocurilor coboară la {fmt_num(res.dur_stoc[2], 2)} zile "
-        f"({fmt_num(res.vit_stoc[2], 2)} rotații), iar durata creanțelor totale scade cu peste 1.040 de zile (de la "
-        f"{fmt_num(res.dur_creante[0], 2)} zile la {fmt_num(res.dur_creante[2], 2)} zile) pe măsură ce subvențiile din ct. 445 sunt "
-        f"încasate. La nivel strict comercial, în perioada de raportare 2 clienții (ct. 411) sunt încasați în medie la "
-        f"{fmt_num(res.dur_clienti_411[2], 1)} zile, iar furnizorii curenți (ct. 401) sunt achitați la {fmt_num(res.dur_furnizori_401[2], 1)} zile.",
+    ds0, ds2 = res.dur_stoc[0], res.dur_stoc[2]
+    dc0, dc2 = res.dur_creante[0], res.dur_creante[2]
+    dd0, dd2 = res.dur_dat[0], res.dur_dat[2]
+    d_cli2 = res.dur_clienti_411[2]
+    d_furn2 = res.dur_furnizori_401[2]
+
+    if d_cli2 <= d_furn2:
+        decalaj_com = f"clienții comerciali (ct. 411) sunt încasați în medie la {fmt_num(d_cli2, 1)} zile, mai rapid decât termenul mediu de plată a furnizorilor (ct. 401 = {fmt_num(d_furn2, 1)} zile), generând un decalaj comercial favorabil trezoreriei"
+    else:
+        decalaj_com = f"termenul mediu de încasare a clienților comerciali (ct. 411 = {fmt_num(d_cli2, 1)} zile) depășește durata medie de achitare a furnizorilor (ct. 401 = {fmt_num(d_furn2, 1)} zile), ceea ce implică finanțarea creditului-client din resurse proprii"
+
+    s18_msg = pick_variant(
+        bal,
+        "s18_gest",
+        [
+            f"Eficiența gestiunii ciclului operațional: În perioada de raportare 2, stocurile se reînnoiesc în medie la {fmt_num(ds2, 2)} zile ({fmt_num(res.vit_stoc[2], 2)} rotații, față de {fmt_num(ds0, 2)} zile în perioada de raportare 0), creanțele totale au o durată medie de rotație de {fmt_num(dc2, 2)} zile ({fmt_num(res.vit_creante[2], 2)} rotații, față de {fmt_num(dc0, 2)} zile în perioada 0), iar datoriile pe termen scurt se rotează la {fmt_num(dd2, 2)} zile ({fmt_num(res.vit_dat[2], 2)} rotații). La nivel strict comercial, în perioada de raportare 2 {decalaj_com}.",
+            f"Analiza vitezelor de rotație: Comparativ cu perioada de raportare 0, în perioada de raportare 2 durata medie de stocare se situează la {fmt_num(ds2, 2)} zile ({fmt_num(res.vit_stoc[2], 2)} rotații/perioadă), durata de recuperare a creanțelor totale la {fmt_num(dc2, 2)} zile ({fmt_num(res.vit_creante[2], 2)} rotații), iar durata de exigibilitate a datoriilor curente la {fmt_num(dd2, 2)} zile (față de {fmt_num(dd0, 2)} zile în perioada 0). Pe relația comercială directă din perioada de raportare 2, {decalaj_com}.",
+            f"Diagnostic operațional al rotației capitalurilor: La finele perioadei de raportare 2, ciclul de conversie a activelor circulante este caracterizat de o rotație a stocurilor la {fmt_num(ds2, 2)} zile, o rotație a creanțelor totale la {fmt_num(dc2, 2)} zile și o rotație a datoriilor pe termen scurt la {fmt_num(dd2, 2)} zile; în planul creditului comercial din perioada de raportare 2, {decalaj_com}.",
+        ],
     )
+    add_paragraph(doc, s18_msg)

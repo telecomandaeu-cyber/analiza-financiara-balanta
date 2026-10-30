@@ -22,9 +22,12 @@ from core_balanta import (
     calc_growth_rate,
     calc_index,
     calc_ritm_mediu,
+    describe_trajectory,
     fmt_money,
     fmt_ratio_pct,
     make_table,
+    pick_variant,
+    safe_div,
 )
 from sheet_02_cpp import CPPResult
 
@@ -217,15 +220,36 @@ def render_sheet_13_sig(doc: Document, bal: BalantaData, res: SIGResult) -> None
         font_size=7.6,
     )
 
-    g_pe = (res.productia_exercitiului[2] - res.productia_exercitiului[1]) / res.productia_exercitiului[1] if abs(res.productia_exercitiului[1]) > 1e-6 else 0.0
+    traj_va = describe_trajectory(res.valoarea_adaugata, bal, "s13_va", "Valoarea adăugată (VA)")
+    traj_ebe = describe_trajectory(res.ebe, bal, "s13_ebe", "Excedentul brut al exploatării (EBE)")
+
+    mc2 = res.marja_comerciala[2]
+    pe2 = res.productia_exercitiului[2]
+    va2 = res.valoarea_adaugata[2]
+    ebe2 = res.ebe[2]
+    re2 = res.rezultat_exploatare[2]
+    rc2 = res.rezultat_curent[2]
+    rn2 = res.rezultat_net[2]
+
+    if mc2 > pe2:
+        motor_sig = f"formarea marjelor în perioada de raportare 2 este susținută preponderent de activitatea comercială (Marja comercială = {fmt_money(mc2)} lei, față de Producția exercițiului = {fmt_money(pe2)} lei)"
+    elif pe2 > 0 and mc2 > 0:
+        motor_sig = f"baza generatoare de valoare în perioada de raportare 2 îmbină Producția exercițiului ({fmt_money(pe2)} lei) cu Marja comercială ({fmt_money(mc2)} lei)"
+    else:
+        motor_sig = f"activitatea de bază din perioada de raportare 2 se sprijină pe Producția exercițiului ({fmt_money(pe2)} lei)"
+
+    s13_end = pick_variant(
+        bal,
+        "s13_end",
+        [
+            f"La treptele finale ale cascadei din perioada de raportare 2, Rezultatul exploatării este de {fmt_money(re2)} lei, Rezultatul curent atinge {fmt_money(rc2)} lei, iar Rezultatul net al exercițiului se cifrează la {fmt_money(rn2)} lei.",
+            f"După deducerea amortizărilor și integrarea fluxurilor financiare și fiscale în perioada de raportare 2, cascada se închide cu un Rezultat al exploatării de {fmt_money(re2)} lei, un Rezultat curent de {fmt_money(rc2)} lei și un Profit net de {fmt_money(rn2)} lei.",
+            f"Translatarea EBE ({fmt_money(ebe2)} lei) către palierele contabile finale din perioada de raportare 2 conduce la un Rezultat din exploatare de {fmt_money(re2)} lei, un Rezultat curent de {fmt_money(rc2)} lei și un Rezultat net de {fmt_money(rn2)} lei.",
+        ],
+    )
+
     add_paragraph(
         doc,
-        f"Interpretarea cascadei SIG: Marja comercială se situează la {fmt_money(res.marja_comerciala[2])} lei în perioada de "
-        f"raportare 2, iar Producția exercițiului evoluează de la {fmt_money(res.productia_exercitiului[0])} lei în perioada de "
-        f"raportare 0 la {fmt_money(res.productia_exercitiului[2])} lei în perioada de raportare 2 ({fmt_ratio_pct(g_pe, plus_sign=True)} "
-        f"față de perioada de raportare 1). După deducerea consumurilor intermediare de la terți ({fmt_money(res.consumuri_terti[2])} lei), "
-        f"societatea degajă o Valoare Adăugată de {fmt_money(res.valoarea_adaugata[2])} lei și un Excedent Brut al Exploatării (EBE) "
-        f"de {fmt_money(res.ebe[2])} lei. Rezultatul Exploatării atinge {fmt_money(res.rezultat_exploatare[2])} lei, conducând la un "
-        f"Rezultat Curent de {fmt_money(res.rezultat_curent[2])} lei și un Rezultat Net de {fmt_money(res.rezultat_net[2])} lei în "
-        "perioada de raportare 2.",
+        f"Interpretarea cascadei SIG: Analiza treptelor de acumulare arată că {motor_sig}; după scăderea consumurilor intermediare "
+        f"provenite de la terți ({fmt_money(res.consumuri_terti[2])} lei în perioada de raportare 2), {traj_va}, în timp ce {traj_ebe}. {s13_end}",
     )

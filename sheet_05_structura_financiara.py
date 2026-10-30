@@ -20,10 +20,12 @@ from core_balanta import (
     add_paragraph,
     calc_delta,
     calc_index,
+    describe_trajectory,
     fmt_money,
     fmt_pct,
     fmt_ratio_pct,
     make_table,
+    pick_variant,
     safe_div,
 )
 from sheet_03_bilant_financiar import BilantFinanciarResult
@@ -114,14 +116,31 @@ def render_sheet_05_structura_financiara(
         font_size=7.7,
     )
 
+    traj_cp = describe_trajectory(sf.cp, bal, "s05_cp", "capitalurile proprii")
+    traj_dtot = describe_trajectory(sf.dtot, bal, "s05_dtot", "datoriile totale (DTL + DTS)")
+    pond_cp2 = safe_div(sf.cp[2], sf.pasiv1[2])
+
+    if pond_cp2 >= 0.50:
+        aut_msg = pick_variant(
+            bal,
+            "s05_aut_high",
+            [
+                f"În perioada de raportare 2, autofinanțarea deține rolul determinant ({fmt_ratio_pct(pond_cp2)} din pasivul total), conferind societății o independență financiară solidă față de creditori.",
+                f"Preponderența resurselor proprii în pasivul perioadei de raportare 2 ({fmt_ratio_pct(pond_cp2)}) atestă o structură de finanțare conservatoare și rezilientă la șocuri pe piața creditului.",
+                f"Capitalurile proprii acoperă {fmt_ratio_pct(pond_cp2)} din totalul resurselor în perioada de raportare 2, devansând datoriile totale și consolidând autonomia decizională a firmei.",
+            ],
+        )
+    else:
+        aut_msg = pick_variant(
+            bal,
+            "s05_aut_low",
+            [
+                f"În perioada de raportare 2, resursele atrase și împrumutate dețin {fmt_ratio_pct(1.0 - pond_cp2)} din pasivul total (capitalurile proprii reprezentând {fmt_ratio_pct(pond_cp2)}), finanțarea activității bazându-se prioritar pe creditul comercial și bancar.",
+                f"Ponderea capitalurilor proprii în pasivul perioadei de raportare 2 este de {fmt_ratio_pct(pond_cp2)}, ceea ce reflectă o utilizare activă a resurselor temporare și la termen ({fmt_money(sf.dtot[2])} lei) în susținerea ciclului de exploatare.",
+            ],
+        )
+
     add_paragraph(
         doc,
-        f"Sinteză financiară: Între perioada de raportare 0 și perioada de raportare 2, datoriile pe termen lung înregistrează o "
-        f"variație de {fmt_money(sf.dtl[2] - sf.dtl[0])} lei ({fmt_pct(safe_div(sf.dtl[2] - sf.dtl[0], sf.dtl[0])*100, plus_sign=True)}), "
-        f"datoriile pe termen scurt variază cu {fmt_money(sf.dts[2] - sf.dts[0])} lei "
-        f"({fmt_pct(safe_div(sf.dts[2] - sf.dts[0], sf.dts[0])*100, plus_sign=True)}), iar capitalurile proprii evoluează cu "
-        f"{fmt_money(sf.cp[2] - sf.cp[0])} lei ({fmt_pct(safe_div(sf.cp[2] - sf.cp[0], sf.cp[0])*100, plus_sign=True)}, de la "
-        f"{fmt_money(sf.cp[0])} lei la {fmt_money(sf.cp[2])} lei). Ponderea capitalurilor proprii în pasivul total este de "
-        f"{fmt_ratio_pct(safe_div(sf.cp[0], sf.pasiv1[0]))} în perioada de raportare 0, {fmt_ratio_pct(safe_div(sf.cp[1], sf.pasiv1[1]))} "
-        f"în perioada de raportare 1 și {fmt_ratio_pct(safe_div(sf.cp[2], sf.pasiv1[2]))} în perioada de raportare 2.",
+        f"Dinamica structurii financiare: Pe parcursul celor trei perioade de raportare, {traj_cp}, în timp ce {traj_dtot}. {aut_msg}",
     )

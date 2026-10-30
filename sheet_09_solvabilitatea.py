@@ -19,10 +19,12 @@ from core_balanta import (
     add_paragraph,
     calc_delta,
     calc_index,
+    describe_trajectory,
     fmt_money,
     fmt_num,
     fmt_ratio_pct,
     make_table,
+    pick_variant,
     safe_div,
 )
 from sheet_01_bilant import BilantResult
@@ -106,11 +108,23 @@ def render_sheet_09_solvabilitatea(
         font_size=7.8,
     )
 
-    add_paragraph(
-        doc,
-        f"Evaluarea solvabilității: Solvabilitatea generală (Activ total / Datorii totale) este supraunitară în toate cele trei "
-        f"perioade de raportare ({fmt_ratio_pct(sg[0])} în perioada de raportare 0, {fmt_ratio_pct(sg[1])} în perioada de raportare 1 "
-        f"și {fmt_ratio_pct(sg[2])} în perioada de raportare 2), activul total ({fmt_money(ta[2])} lei în perioada de raportare 2) "
-        f"acoperind integral datoriile totale ({fmt_money(dt[2])} lei) și asigurând un activ net contabil pozitiv de "
-        f"{fmt_money(sf.cp[2])} lei.",
-    )
+    traj_sg = describe_trajectory(sg, bal, "s09_sg", "rata solvabilității generale (Activ total / Datorii totale)", is_ratio=True)
+    if sg[2] >= 2.0:
+        solv_msg = pick_variant(
+            bal,
+            "s09_high",
+            [
+                f"La nivelul perioadei de raportare 2, activul total ({fmt_money(ta[2])} lei) depășește de {fmt_num(sg[2], 2)} ori datoriile totale ({fmt_money(dt[2])} lei), depășind cu o rezervă substanțială pragul bancar de 166% și garantând securitatea creditorilor printr-un activ net pozitiv de {fmt_money(sf.cp[2])} lei.",
+                f"Coeficientul solvabilității generale din perioada de raportare 2 ({fmt_num(sg[2], 4)}, respectiv {fmt_ratio_pct(sg[2])}) confirmă o autonomie patrimonială solidă, datoriile totale ({fmt_money(dt[2])} lei) fiind acoperite de peste două ori de valoarea activelor bilanțiere ({fmt_money(ta[2])} lei).",
+            ],
+        )
+    elif sg[2] >= 1.66:
+        solv_msg = (
+            f"În perioada de raportare 2, solvabilitatea generală ({fmt_ratio_pct(sg[2])}) depășește plafonul de siguranță de 166%, activul total ({fmt_money(ta[2])} lei) asigurând rambursarea integrală a datoriilor totale ({fmt_money(dt[2])} lei) și menținerea unui capital propriu de {fmt_money(sf.cp[2])} lei."
+        )
+    else:
+        solv_msg = (
+            f"În perioada de raportare 2, solvabilitatea generală se situează la {fmt_ratio_pct(sg[2])} (coeficient {fmt_num(sg[2], 4)}), activul total de {fmt_money(ta[2])} lei raportându-se la datorii totale de {fmt_money(dt[2])} lei."
+        )
+
+    add_paragraph(doc, f"Diagnostic de solvabilitate: Pe ansamblul intervalului analizat, {traj_sg}. {solv_msg}")

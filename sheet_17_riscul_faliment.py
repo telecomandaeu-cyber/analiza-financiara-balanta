@@ -20,6 +20,7 @@ from core_balanta import (
     add_paragraph,
     fmt_num,
     make_table,
+    pick_variant,
     safe_div,
 )
 from sheet_01_bilant import BilantResult
@@ -185,12 +186,28 @@ def render_sheet_17_riscul_faliment(
         font_size=7.7,
     )
 
-    add_paragraph(
-        doc,
-        f"Evaluarea riscului de insolvență: Scorul Z Altman evoluează de la {fmt_num(res.z_altman[0], 4)} în perioada de raportare 0 "
-        f"la {fmt_num(res.z_altman[1], 4)} în perioada de raportare 1 și {fmt_num(res.z_altman[2], 4)} în perioada de raportare 2 "
-        f"({res.interp_altman[2]}), iar în varianta ajustată (fără veniturile în avans) atinge {fmt_num(res.z_altman_ajustat[2], 4)} "
-        f"({_interp_altman(res.z_altman_ajustat[2])}). În modelul Conan-Holder, funcția-scor înregistrează nivelul "
-        f"{fmt_num(res.z_canon_holder[2], 4)} în varianta standard și {fmt_num(res.z_ch_ajustat[2], 4)} în varianta ajustată "
-        f"({_interp_ch(res.z_ch_ajustat[2])}).",
-    )
+    z_a2 = res.z_altman_ajustat[2]
+    z_ch2 = res.z_ch_ajustat[2]
+    if z_a2 > 3.0:
+        s17_msg = pick_variant(
+            bal,
+            "s17_solv",
+            [
+                f"Evaluarea riscului de insolvență: Scorul Z Altman evoluează de la {fmt_num(res.z_altman[0], 4)} în perioada de raportare 0 la {fmt_num(res.z_altman[1], 4)} în perioada de raportare 1 și {fmt_num(res.z_altman[2], 4)} în perioada de raportare 2 (respectiv {fmt_num(z_a2, 4)} în varianta ajustată -> {_interp_altman(z_a2)}), plasând societatea în zona de siguranță financiară (> 3,00). Concomitent, funcția-scor Conan-Holder înregistrează {fmt_num(res.z_canon_holder[2], 4)} în varianta standard și {fmt_num(z_ch2, 4)} în varianta ajustată ({_interp_ch(z_ch2)}).",
+                f"Diagnostic prin metoda scoringului: La finele perioadei de raportare 2, modelul Altman indică un scor standard de {fmt_num(res.z_altman[2], 4)} și un scor ajustat de {fmt_num(z_a2, 4)} (> 3,00 — {_interp_altman(z_a2)}), confirmat și de modelul Conan-Holder (scor standard {fmt_num(res.z_canon_holder[2], 4)}, scor ajustat {fmt_num(z_ch2, 4)} — {_interp_ch(z_ch2)}), ceea ce atestă un risc de faliment neglijabil.",
+            ],
+        )
+    elif z_a2 >= 1.8:
+        s17_msg = pick_variant(
+            bal,
+            "s17_med",
+            [
+                f"Evaluarea riscului de insolvență: În perioada de raportare 2, Scorul Z Altman se situează în intervalul [1,80 – 3,00] ({fmt_num(res.z_altman[2], 4)} în varianta standard și {fmt_num(z_a2, 4)} în varianta ajustată -> {_interp_altman(z_a2)}), în timp ce funcția Conan-Holder indică {fmt_num(res.z_canon_holder[2], 4)} (ajustat {fmt_num(z_ch2, 4)} -> {_interp_ch(z_ch2)}).",
+                f"Diagnostic de risc: Pe parcursul celor trei perioade de raportare, Scorul Z Altman evoluează de la {fmt_num(res.z_altman[0], 4)} la {fmt_num(res.z_altman[1], 4)} și {fmt_num(res.z_altman[2], 4)} (ajustat {fmt_num(z_a2, 4)} — {_interp_altman(z_a2)}), iar scorul Conan-Holder în perioada de raportare 2 este de {fmt_num(res.z_canon_holder[2], 4)} (ajustat {fmt_num(z_ch2, 4)} — {_interp_ch(z_ch2)}).",
+            ],
+        )
+    else:
+        s17_msg = (
+            f"Evaluarea riscului de insolvență: În perioada de raportare 2, Scorul Z Altman este de {fmt_num(res.z_altman[2], 4)} (ajustat {fmt_num(z_a2, 4)} -> {_interp_altman(z_a2)}), iar Scorul Conan-Holder este de {fmt_num(res.z_canon_holder[2], 4)} (ajustat {fmt_num(z_ch2, 4)} -> {_interp_ch(z_ch2)}), impunând măsuri de consolidare a capitalurilor proprii și a vitezei de rotație."
+        )
+    add_paragraph(doc, s17_msg)

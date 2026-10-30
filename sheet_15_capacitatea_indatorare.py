@@ -20,6 +20,7 @@ from core_balanta import (
     fmt_num,
     fmt_ratio_pct,
     make_table,
+    pick_variant,
     safe_div,
 )
 from sheet_01_bilant import BilantResult
@@ -172,11 +173,18 @@ def render_sheet_15_capacitatea_indatorare(
         font_size=7.7,
     )
 
-    add_paragraph(
-        doc,
-        f"Verdict bancar: În perioada de raportare 2, coeficienții de îndatorare la termen înregistrează nivelurile CIT 1 = "
-        f"{fmt_num(res.cit1_fin[2], 4)} (plafon maxim 0,50) și CIT 2 = {fmt_num(res.cit2_fin[2], 4)} (plafon maxim 1,00), iar "
-        f"coeficienții îndatorării globale efective sunt CIG 1 = {fmt_num(res.cig1_ef[2], 4)} ({fmt_ratio_pct(res.cig1_ef[2])}, față "
-        f"de plafonul maxim de 66%) și CIG 2 = {fmt_num(res.cig2_ef[2], 4)} (față de plafonul maxim de 2,00), reflectând "
-        f"proporția în care datoriile totale sunt acoperite de pasivul total și de capitalurile proprii.",
-    )
+    all_ok = res.cig1_ef[2] <= 0.66 and res.cig2_ef[2] <= 2.0 and res.cit1_fin[2] <= 0.50 and res.cit2_fin[2] <= 1.0
+    if all_ok:
+        s15_msg = pick_variant(
+            bal,
+            "s15_ok",
+            [
+                f"Verdict bancar privind capacitatea de îndatorare: În perioada de raportare 2, toți cei patru coeficienți efectivi respectă plafoanele prudențiale — CIG 1 = {fmt_num(res.cig1_ef[2], 4)} ({fmt_ratio_pct(res.cig1_ef[2])} <= 66%), CIG 2 = {fmt_num(res.cig2_ef[2], 4)} (<= 2,00), CIT 1 = {fmt_num(res.cit1_fin[2], 4)} (<= 0,50) și CIT 2 = {fmt_num(res.cit2_fin[2], 4)} (<= 1,00) — atestând că societatea dispune de o rezervă substanțială de creditare bancară.",
+                f"Evaluarea eligibilității la creditare: La finele perioadei de raportare 2, îndatorarea la termen este redusă (CIT 1 = {fmt_num(res.cit1_fin[2], 4)}, CIT 2 = {fmt_num(res.cit2_fin[2], 4)}), iar îndatorarea globală efectivă (CIG 1 = {fmt_num(res.cig1_ef[2], 4)}, CIG 2 = {fmt_num(res.cig2_ef[2], 4)}) se încadrează integral în normele bancare, oferind o marjă confortabilă pentru atragerea de noi finanțări.",
+            ],
+        )
+    else:
+        s15_msg = (
+            f"Verdict bancar: În perioada de raportare 2, coeficienții de îndatorare la termen înregistrează nivelurile CIT 1 = {fmt_num(res.cit1_fin[2], 4)} (plafon 0,50) și CIT 2 = {fmt_num(res.cit2_fin[2], 4)} (plafon 1,00), în timp ce coeficienții îndatorării globale efective sunt CIG 1 = {fmt_num(res.cig1_ef[2], 4)} ({fmt_ratio_pct(res.cig1_ef[2])}, plafon 66%) și CIG 2 = {fmt_num(res.cig2_ef[2], 4)} (plafon 2,00)."
+        )
+    add_paragraph(doc, s15_msg)

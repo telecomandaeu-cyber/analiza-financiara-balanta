@@ -18,8 +18,10 @@ from core_balanta import (
     add_paragraph,
     calc_delta,
     calc_index,
+    describe_trajectory,
     fmt_ratio_pct,
     make_table,
+    pick_variant,
     safe_div,
 )
 from sheet_05_structura_financiara import StructuraFinanciaraResult
@@ -149,14 +151,28 @@ def render_sheet_06_ratele_pasivului(doc: Document, bal: BalantaData, res: RateP
         font_size=7.8,
     )
 
-    add_paragraph(
-        doc,
-        f"Evaluarea autonomiei și stabilității: Rata stabilității financiare (RSF) înregistrează nivelul de {fmt_ratio_pct(res.rsf[0])} "
-        f"în perioada de raportare 0, {fmt_ratio_pct(res.rsf[1])} în perioada de raportare 1 și {fmt_ratio_pct(res.rsf[2])} în perioada "
-        f"de raportare 2 ({fmt_ratio_pct(res.rsf[2] - res.rsf[0], plus_sign=True)}), în timp ce rata autonomiei financiare globale (RAFG) "
-        f"este de {fmt_ratio_pct(res.rafg[0])}, {fmt_ratio_pct(res.rafg[1])} și {fmt_ratio_pct(res.rafg[2])}. La nivelul resurselor "
-        f"permanente, rata autonomiei financiare la termen (RAFT = {fmt_ratio_pct(res.raft[2])} în perioada de raportare 2) și rata "
-        f"îndatorării la termen (RIT = {fmt_ratio_pct(res.rit[2])} în perioada de raportare 2) se încadrează cu o rezervă amplă în "
-        f"plafoanele bancare (>=50%, respectiv <=50%), iar rata îndatorării globale (RIG) este de {fmt_ratio_pct(res.rig[2])} în "
-        "perioada de raportare 2.",
-    )
+    traj_rsf = describe_trajectory(res.rsf, bal, "s06_rsf", "rata stabilității financiare (RSF)", is_ratio=True)
+    if res.rsf[2] >= 0.66 and res.rafg[2] >= 0.50:
+        verdict_pasiv = pick_variant(
+            bal,
+            "s06_v_strong",
+            [
+                f"În perioada de raportare 2, atât rata autonomiei financiare globale (RAFG = {fmt_ratio_pct(res.rafg[2])}), cât și rata autonomiei la termen (RAFT = {fmt_ratio_pct(res.raft[2])}) depășesc pragul bancar de 50%, în timp ce rata îndatorării globale (RIG = {fmt_ratio_pct(res.rig[2])}) și la termen (RIT = {fmt_ratio_pct(res.rit[2])}) confirmă un risc financiar redus.",
+                f"Structura pasivului din perioada de raportare 2 indică o autonomie financiară ridicată: RAFG atinge {fmt_ratio_pct(res.rafg[2])}, RAFT se situează la {fmt_ratio_pct(res.raft[2])}, iar îndatorarea globală (RIG = {fmt_ratio_pct(res.rig[2])}) se menține confortabil sub plafonul critic de 66%.",
+            ],
+        )
+    elif res.rsf[2] >= 0.50:
+        verdict_pasiv = pick_variant(
+            bal,
+            "s06_v_med",
+            [
+                f"În perioada de raportare 2, resursele stabile depășesc jumătate din pasiv, rata autonomiei financiare globale (RAFG) fiind de {fmt_ratio_pct(res.rafg[2])}, rata autonomiei la termen (RAFT) de {fmt_ratio_pct(res.raft[2])}, iar rata îndatorării globale (RIG) de {fmt_ratio_pct(res.rig[2])}.",
+                f"La finele perioadei de raportare 2, echilibrul dintre sursele proprii și cele împrumutate este reflectat de RAFG = {fmt_ratio_pct(res.rafg[2])}, RAFT = {fmt_ratio_pct(res.raft[2])}, RIT = {fmt_ratio_pct(res.rit[2])} și RIG = {fmt_ratio_pct(res.rig[2])}.",
+            ],
+        )
+    else:
+        verdict_pasiv = (
+            f"În perioada de raportare 2, ponderea ridicată a datoriilor pe termen scurt determină o rată a îndatorării globale (RIG) de {fmt_ratio_pct(res.rig[2])} și o rată a autonomiei financiare globale (RAFG) de {fmt_ratio_pct(res.rafg[2])} (RAFT = {fmt_ratio_pct(res.raft[2])}, RIT = {fmt_ratio_pct(res.rit[2])})."
+        )
+
+    add_paragraph(doc, f"Evaluarea ratelor de structură ale pasivului: Pe intervalul analizat, {traj_rsf}. {verdict_pasiv}")

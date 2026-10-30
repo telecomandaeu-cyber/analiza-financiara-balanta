@@ -20,6 +20,7 @@ from core_balanta import (
     calc_delta,
     fmt_money,
     make_table,
+    pick_variant,
 )
 from sheet_11_echilibru_static import EchilibruStaticResult
 
@@ -102,12 +103,16 @@ def render_sheet_12_echilibru_dinamic(
         font_size=7.8,
     )
 
-    add_paragraph(
-        doc,
-        f"Sinteză dinamică: Între perioada de raportare 0 și perioada de raportare 1, diminuarea temporară a Fondului de rulment "
-        f"({fmt_money(res.d_fr[0])} lei) și a Trezoreriei nete ({fmt_money(res.d_tn[0])} lei) reflectă autofinanțarea achizițiilor "
-        f"de echipamente tehnologice și rambursarea ratelor scadente ale creditului pe termen lung. Între perioada de raportare 1 și "
-        f"perioada de raportare 2, toți cei trei indicatori dinamici sunt în echilibru (EFTL + EFTS + EFC): ΔFR crește cu "
-        f"+{fmt_money(res.d_fr[1])} lei, ΔNFR eliberează resurse de {fmt_money(res.d_nfr[1])} lei, generând un flux net de trezorerie "
-        f"pozitiv ΔTN = +{fmt_money(res.d_tn[1])} lei (și +{fmt_money(res.d_tn[0] + res.d_tn[1])} lei pe întregul interval P2 - P0).",
+    tot_dfr = res.d_fr[0] + res.d_fr[1]
+    tot_dnfr = res.d_nfr[0] + res.d_nfr[1]
+    tot_dtn = res.d_tn[0] + res.d_tn[1]
+
+    s12_msg = pick_variant(
+        bal,
+        "s12_dyn",
+        [
+            f"Sinteză dinamică a fluxurilor: Între perioada de raportare 0 și perioada de raportare 1, variațiile au fost ΔFR = {fmt_money(res.d_fr[0])} lei ({res.interp_d_fr[0]}), ΔNFR = {fmt_money(res.d_nfr[0])} lei ({res.interp_d_nfr[0]}) și ΔTN = {fmt_money(res.d_tn[0])} lei ({res.interp_d_tn[0]}). În intervalul dintre perioada de raportare 1 și perioada de raportare 2, fluxurile consemnează ΔFR = {fmt_money(res.d_fr[1])} lei ({res.interp_d_fr[1]}), ΔNFR = {fmt_money(res.d_nfr[1])} lei ({res.interp_d_nfr[1]}) și ΔTN = {fmt_money(res.d_tn[1])} lei ({res.interp_d_tn[1]}), cumulând pe întregul orizont P2 - P0 o modificare de {fmt_money(tot_dfr)} lei a Fondului de rulment și de {fmt_money(tot_dtn)} lei a Trezoreriei nete.",
+            f"Analiza variațiilor de echilibru arată că în primul subinterval (P1 - P0) fluxul net de trezorerie a fost ΔTN = {fmt_money(res.d_tn[0])} lei (pe fondul ΔFR = {fmt_money(res.d_fr[0])} lei și ΔNFR = {fmt_money(res.d_nfr[0])} lei), în timp ce în al doilea subinterval (P2 - P1) s-a înregistrat ΔFR = {fmt_money(res.d_fr[1])} lei ({res.interp_d_fr[1]}), ΔNFR = {fmt_money(res.d_nfr[1])} lei ({res.interp_d_nfr[1]}) și ΔTN = {fmt_money(res.d_tn[1])} lei ({res.interp_d_tn[1]}). Cumulat între perioada 0 și perioada 2, ΔFR este de {fmt_money(tot_dfr)} lei, ΔNFR de {fmt_money(tot_dnfr)} lei, iar ΔTN de {fmt_money(tot_dtn)} lei.",
+        ],
     )
+    add_paragraph(doc, s12_msg)

@@ -36,7 +36,14 @@ if str(ANALIZA_DIR) not in sys.path:
     sys.path.insert(0, str(ANALIZA_DIR))
 
 from analiza_financiara import generate_full_financial_report
-from core_balanta import fmt_money, fmt_num, fmt_pct, fmt_ratio_pct, parse_balanta_pdf
+from core_balanta import (
+    extract_word_report_blocks,
+    fmt_money,
+    fmt_num,
+    fmt_pct,
+    fmt_ratio_pct,
+    parse_balanta_pdf,
+)
 from sheet_01_bilant import compute_sheet_01_bilant
 from sheet_02_cpp import compute_sheet_02_cpp
 from sheet_03_bilant_financiar import compute_sheet_03_bilant_financiar
@@ -118,6 +125,7 @@ def run_analysis_and_build_payload(pdf_path: Path) -> Dict[str, Any]:
         docx_path = generate_full_financial_report(pdf_path)
         file_id = f"{uuid.uuid4().hex[:8]}_{docx_path.name}"
         GENERATED_FILES[file_id] = docx_path
+        report_content = extract_word_report_blocks(docx_path)
 
     g_cp = (s05_sf.cp[2] - s05_sf.cp[0]) / abs(s05_sf.cp[0]) if abs(s05_sf.cp[0]) > 1e-6 else 0.0
     g_rn = (s13_sig.rezultat_net[2] - s13_sig.rezultat_net[0]) / abs(s13_sig.rezultat_net[0]) if abs(s13_sig.rezultat_net[0]) > 1e-6 else 0.0
@@ -309,6 +317,7 @@ def run_analysis_and_build_payload(pdf_path: Path) -> Dict[str, Any]:
         "cards": cards,
         "kpi_rows": kpi_rows,
         "cls_rows": cls_rows,
+        "report_content": report_content,
     }
 
 
@@ -694,6 +703,100 @@ HTML_PAGE = r"""<!DOCTYPE html>
       font-weight: 700;
       color: var(--navy);
     }
+    .intro-box {
+      background: var(--card);
+      border-radius: 12px;
+      padding: 16px 20px;
+      border: 1px solid var(--border);
+      margin-bottom: 20px;
+      font-size: 13.8px;
+      color: #1e293b;
+      text-align: justify;
+    }
+    .toc-bar {
+      background: var(--card);
+      border-radius: 12px;
+      padding: 14px 18px;
+      border: 1px solid var(--border);
+      margin-bottom: 24px;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+    }
+    .toc-title {
+      font-size: 12.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--navy);
+      margin-bottom: 10px;
+    }
+    .toc-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+    .toc-chip {
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--navy);
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      padding: 5px 10px;
+      border-radius: 7px;
+      transition: all 0.15s ease;
+    }
+    .toc-chip:hover {
+      background: var(--navy);
+      color: #ffffff;
+      border-color: var(--navy);
+    }
+    .part-banner-web {
+      background: linear-gradient(135deg, #1b365d 0%, #1e4e8c 100%);
+      color: #ffffff;
+      padding: 16px 22px;
+      border-radius: 11px;
+      margin: 28px 0 18px;
+      box-shadow: 0 3px 12px rgba(27, 54, 93, 0.16);
+    }
+    .part-kicker-web {
+      font-size: 11.5px;
+      font-weight: 700;
+      color: #93c5fd;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+    }
+    .part-title-web {
+      font-size: 16.5px;
+      font-weight: 700;
+      margin: 3px 0;
+    }
+    .part-sub-web {
+      font-size: 12.8px;
+      font-style: italic;
+      color: #e2e8f0;
+    }
+    .analysis-para {
+      margin-top: 12px;
+      background: #f8fafc;
+      border-left: 4px solid #2563eb;
+      padding: 12px 16px;
+      border-radius: 0 8px 8px 0;
+      font-size: 13.5px;
+      color: #1e293b;
+      text-align: justify;
+    }
+    .bullet-item-web {
+      background: #f8fafc;
+      border-left: 4px solid var(--navy);
+      padding: 12px 16px;
+      border-radius: 0 8px 8px 0;
+      margin-bottom: 10px;
+      font-size: 13.5px;
+      text-align: justify;
+    }
+    .bullet-item-web strong {
+      color: var(--navy);
+    }
   </style>
 </head>
 <body>
@@ -768,6 +871,8 @@ HTML_PAGE = r"""<!DOCTYPE html>
         </a>
       </div>
 
+      <div id="introTextBox" class="intro-box" style="display:none;"></div>
+
       <div class="cards-grid" id="cardsGrid"></div>
 
       <div class="section-card">
@@ -806,6 +911,13 @@ HTML_PAGE = r"""<!DOCTYPE html>
           <tbody id="clsTableBody"></tbody>
         </table>
       </div>
+
+      <div class="toc-bar" id="tocBar" style="display:none;">
+        <div class="toc-title">📑 Cuprins Interactiv — Toate Capitolele Raportului Financiar (Cap. 1 – Cap. 21)</div>
+        <div class="toc-chips" id="tocChips"></div>
+      </div>
+
+      <div id="fullReportContainer"></div>
     </div>
   </div>
 
@@ -1011,6 +1123,112 @@ HTML_PAGE = r"""<!DOCTYPE html>
         `;
         clsBody.appendChild(tr);
       });
+
+      // Afisare integrala a continutului din raportul Word (Părțile I-VI și Capitolele 1-21)
+      const rc = data.report_content;
+      const introBox = document.getElementById('introTextBox');
+      const tocBar = document.getElementById('tocBar');
+      const tocChips = document.getElementById('tocChips');
+      const fullContainer = document.getElementById('fullReportContainer');
+
+      fullContainer.innerHTML = '';
+      tocChips.innerHTML = '';
+
+      if (rc && rc.intro_text) {
+        introBox.style.display = 'block';
+        introBox.textContent = rc.intro_text;
+      } else {
+        introBox.style.display = 'none';
+      }
+
+      if (rc && rc.chapters_nav && rc.chapters_nav.length > 0) {
+        tocBar.style.display = 'block';
+        rc.chapters_nav.forEach(ch => {
+          const a = document.createElement('a');
+          a.className = 'toc-chip';
+          a.href = '#' + ch.id;
+          a.textContent = ch.title.length > 44 ? ch.title.substring(0, 44) + '…' : ch.title;
+          a.title = ch.title;
+          tocChips.appendChild(a);
+        });
+      } else {
+        tocBar.style.display = 'none';
+      }
+
+      if (rc && rc.blocks) {
+        let currentSectionCard = null;
+        rc.blocks.forEach(blk => {
+          if (blk.type === 'part_banner') {
+            currentSectionCard = null;
+            const pb = document.createElement('div');
+            pb.className = 'part-banner-web';
+            pb.innerHTML = `
+              <div class="part-kicker-web">${blk.kicker}</div>
+              <div class="part-title-web">${blk.title}</div>
+              <div class="part-sub-web">${blk.subtitle}</div>
+            `;
+            fullContainer.appendChild(pb);
+          } else if (blk.type === 'heading') {
+            currentSectionCard = document.createElement('div');
+            currentSectionCard.className = 'section-card';
+            currentSectionCard.id = blk.id;
+            const h3 = document.createElement('h3');
+            h3.textContent = blk.text;
+            currentSectionCard.appendChild(h3);
+            fullContainer.appendChild(currentSectionCard);
+          } else if (blk.type === 'table') {
+            const target = currentSectionCard || fullContainer;
+            const tbl = document.createElement('table');
+            const thead = document.createElement('thead');
+            const trh = document.createElement('tr');
+            blk.headers.forEach((h, hIdx) => {
+              const th = document.createElement('th');
+              th.textContent = h;
+              if (hIdx === 0 || (hIdx === 1 && blk.headers[0].length <= 6)) {
+                th.style.textAlign = 'left';
+              }
+              trh.appendChild(th);
+            });
+            thead.appendChild(trh);
+            tbl.appendChild(thead);
+
+            const tbody = document.createElement('tbody');
+            blk.rows.forEach(rowObj => {
+              const tr = document.createElement('tr');
+              if (rowObj.is_total) tr.className = 'total-row';
+              rowObj.cells.forEach((cellObj, cIdx) => {
+                const td = document.createElement('td');
+                td.textContent = cellObj.text;
+                if (cIdx === 0 || (cIdx === 1 && blk.headers[0].length <= 6)) {
+                  td.style.textAlign = 'left';
+                }
+                if (cellObj.bg && cellObj.fg) {
+                  td.style.backgroundColor = cellObj.bg;
+                  td.style.color = cellObj.fg;
+                  td.style.fontWeight = '700';
+                  td.style.textAlign = 'center';
+                }
+                tr.appendChild(td);
+              });
+              tbody.appendChild(tr);
+            });
+            tbl.appendChild(tbody);
+            target.appendChild(tbl);
+          } else if (blk.type === 'paragraph') {
+            const target = currentSectionCard || fullContainer;
+            const p = document.createElement('div');
+            p.className = 'analysis-para';
+            p.textContent = blk.text;
+            target.appendChild(p);
+          } else if (blk.type === 'bullet') {
+            const target = currentSectionCard || fullContainer;
+            const b = document.createElement('div');
+            b.className = 'bullet-item-web';
+            b.innerHTML = `<strong>▪ ${blk.lead}:</strong> ${blk.body}`;
+            target.appendChild(b);
+          }
+        });
+      }
     }
   </script>
 </body>

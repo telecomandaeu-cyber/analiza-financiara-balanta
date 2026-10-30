@@ -24,6 +24,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
+from docx.table import Table
+from docx.text.paragraph import Paragraph
 
 NumberLike = Union[int, float]
 
@@ -928,4 +930,117 @@ def describe_trajectory(
             f"evoluția consemnată de {label} este una de restrângere treptată ({f0} -> {f1} -> {f2}, echivalentul unei modificări relative de {rel_str})",
         ],
     )
+
+
+def extract_word_report_blocks(docx_path: Union[str, Path]) -> Dict[str, Any]:
+    """
+    Extrage integral conținutul structurat al documentului Word (.docx) generat
+    (textul introductiv, cele 6 părți tematice, cele 21 de capitole, toate tabelele
+    cu marcarea rândurilor de total și a celulelor semantice, paragrafele analitice
+    și concluziile executive), pentru afișare identică în interfața web.
+    """
+    doc = Document(str(docx_path))
+    intro_text = ""
+    blocks: List[Dict[str, Any]] = []
+    chapters_nav: List[Dict[str, str]] = []
+    started_parts = False
+
+    for child in doc.element.body:
+        tag = child.tag.split("}")[-1]
+        if tag == "tbl":
+            tbl = Table(child, doc)
+            if len(tbl.rows) == 1 and len(tbl.columns) == 1:
+                cell_p = tbl.rows[0].cells[0].paragraphs[0]
+                runs = cell_p.runs
+                full_t = cell_p.text.strip()
+                if "PARTEA " in full_t:
+                    started_parts = True
+                    kicker = runs[0].text.strip().rstrip("—").strip() if len(runs) > 0 else ""
+                    title = runs[1].text.strip() if len(runs) > 1 else full_t
+                    subtitle = runs[2].text.strip() if len(runs) > 2 else ""
+                    blocks.append(
+                        {
+                            "type": "part_banner",
+                            "kicker": kicker,
+                            "title": title,
+                            "subtitle": subtitle,
+                        }
+                    )
+            else:
+                if not started_parts:
+                    continue
+                headers = [c.text.strip() for c in tbl.rows[0].cells]
+                rows_data = []
+                for r in tbl.rows[1:]:
+                    cells_info = []
+                    is_total_row = False
+                    for c_idx, c in enumerate(r.cells):
+                        val_str = c.text.strip()
+                        shd = c._tc.xpath(".//w:shd/@w:fill")
+                        fill_hex = shd[0].upper() if shd else "FFFFFF"
+                        if c_idx == 0 and fill_hex == COLOR_BG_TOTAL:
+                            is_total_row = True
+                        sem = _detect_semantic_style(val_str)
+                        cells_info.append(
+                            {
+                                "text": val_str,
+                                "bg": f"#{sem[0]}" if sem else None,
+                                "fg": f"#{sem[1]}" if sem else None,
+                            }
+                        )
+                    rows_data.append({"is_total": is_total_row, "cells": cells_info})
+                blocks.append(
+                    {
+                        "type": "table",
+                        "headers": headers,
+                        "rows": rows_data,
+                    }
+                )
+        elif tag == "p":
+            p = Paragraph(child, doc)
+            txt = p.text.strip()
+            if not txt:
+                continue
+            if not started_parts:
+                if not txt.startswith("0.1.") and not txt.startswith("0.2.") and not intro_text:
+                    intro_text = txt
+                continue
+
+            has_bottom_bdr = bool(p._p.xpath(".//w:pBdr/w:bottom"))
+            if has_bottom_bdr or any(txt.startswith(f"{i}. ") for i in range(1, 22)):
+                cap_num = txt.split(".")[0].strip()
+                cap_id = f"capitol-{cap_num}"
+                chapters_nav.append({"id": cap_id, "num": cap_num, "title": txt})
+                blocks.append(
+                    {
+                        "type": "heading",
+                        "id": cap_id,
+                        "text": txt,
+                    }
+                )
+            elif txt.startswith("▪ "):
+                parts = txt[2:].split(": ", 1)
+                lead = parts[0].strip()
+                body = parts[1].strip() if len(parts) > 1 else ""
+                blocks.append(
+                    {
+                        "type": "bullet",
+                        "lead": lead,
+                        "body": body,
+                    }
+                )
+            else:
+                blocks.append(
+                    {
+                        "type": "paragraph",
+                        "text": txt,
+                    }
+                )
+
+    return {
+        "intro_text": intro_text,
+        "chapters_nav": chapters_nav,
+        "blocks": blocks,
+    }
+
 

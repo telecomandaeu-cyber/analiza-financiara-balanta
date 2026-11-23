@@ -14,6 +14,7 @@ from typing import Tuple
 from docx import Document
 
 from core_balanta import (
+    fmt_pp,
     BalantaData,
     add_heading,
     add_paragraph,
@@ -134,12 +135,12 @@ def render_sheet_08_lichiditatea(
         ],
         [
             "1. Lichiditatea curentă (Active circulante / DTS)",
-            "100% – 200%",
+            "120% – 200%",
             fmt_ratio_pct(res.l_curenta[0]),
             fmt_ratio_pct(res.l_curenta[1]),
             fmt_ratio_pct(res.l_curenta[2]),
-            fmt_ratio_pct(d_lc[0], plus_sign=True),
-            fmt_ratio_pct(d_lc[1], plus_sign=True),
+            fmt_pp(d_lc[0]),
+            fmt_pp(d_lc[1]),
             fmt_ratio_pct(i_lc[1]),
         ],
         [
@@ -148,8 +149,8 @@ def render_sheet_08_lichiditatea(
             fmt_ratio_pct(res.l_rapida[0]),
             fmt_ratio_pct(res.l_rapida[1]),
             fmt_ratio_pct(res.l_rapida[2]),
-            fmt_ratio_pct(d_lr[0], plus_sign=True),
-            fmt_ratio_pct(d_lr[1], plus_sign=True),
+            fmt_pp(d_lr[0]),
+            fmt_pp(d_lr[1]),
             fmt_ratio_pct(i_lr[1]),
         ],
         [
@@ -158,8 +159,8 @@ def render_sheet_08_lichiditatea(
             fmt_ratio_pct(res.l_imediata[0]),
             fmt_ratio_pct(res.l_imediata[1]),
             fmt_ratio_pct(res.l_imediata[2]),
-            fmt_ratio_pct(d_li[0], plus_sign=True),
-            fmt_ratio_pct(d_li[1], plus_sign=True),
+            fmt_pp(d_li[0]),
+            fmt_pp(d_li[1]),
             fmt_ratio_pct(i_li[1]),
         ],
     ]
@@ -176,27 +177,33 @@ def render_sheet_08_lichiditatea(
     traj_lc = describe_trajectory(res.l_curenta, bal, "s08_lc", "lichiditatea curentă (generală)", is_ratio=True)
     lc2, lr2, li2 = res.l_curenta[2], res.l_rapida[2], res.l_imediata[2]
 
-    if lc2 > 2.0:
-        liq_verdict = pick_variant(
-            bal,
-            "s08_high",
-            [
-                f"În perioada de raportare 2, toate cele trei rate depășesc limitele superioare uzuale (lichiditatea curentă = {fmt_ratio_pct(lc2)}, lichiditatea rapidă = {fmt_ratio_pct(lr2)}, lichiditatea imediată = {fmt_ratio_pct(li2)}), indicând o capacitate foarte ridicată de onorare pe loc a angajamentelor scadente și existența unui excedent de lichidități ({fmt_money(bf.disponibilitati[2])} lei).",
-                f"Nivelurile consemnate în perioada de raportare 2 (lichiditate curentă de {fmt_ratio_pct(lc2)}, rapidă de {fmt_ratio_pct(lr2)} și imediată de {fmt_ratio_pct(li2)}) reflectă o acoperire supraunitară amplă a datoriilor pe termen scurt ({fmt_money(bf.datorii_termen_scurt[2])} lei) din activele curente.",
-            ],
+    def _zona(v: float, lo: float, hi: float) -> str:
+        if v < lo:
+            return "sub intervalul recomandat"
+        if v > hi:
+            return "peste intervalul recomandat"
+        return "în intervalul recomandat"
+
+    z_c, z_r, z_i = _zona(lc2, 1.2, 2.0), _zona(lr2, 0.6, 1.0), _zona(li2, 0.2, 0.6)
+    detaliu = (
+        f"lichiditatea curentă de {fmt_ratio_pct(lc2)} ({z_c} de 120%–200%), lichiditatea rapidă de {fmt_ratio_pct(lr2)} "
+        f"({z_r} de 60%–100%) și lichiditatea imediată de {fmt_ratio_pct(li2)} ({z_i} de 20%–60%)"
+    )
+    if lc2 >= 1.2:
+        liq_verdict = (
+            f"În perioada de raportare 2 se înregistrează {detaliu}: activele circulante acoperă datoriile pe termen scurt "
+            f"({fmt_money(bf.datorii_termen_scurt[2])} lei) cu o marjă de siguranță."
         )
-    elif lc2 >= 1.2:
-        liq_verdict = pick_variant(
-            bal,
-            "s08_opt",
-            [
-                f"În perioada de raportare 2, indicatorii se încadrează optim în plafoanele prudențiale bancare: lichiditatea curentă este de {fmt_ratio_pct(lc2)} (interval [120%–200%]), lichiditatea rapidă este de {fmt_ratio_pct(lr2)}, iar lichiditatea imediată atinge {fmt_ratio_pct(li2)} pe baza disponibilităților de {fmt_money(bf.disponibilitati[2])} lei.",
-                f"Capacitatea de plată pe termen scurt în perioada de raportare 2 este echilibrată, cu o lichiditate generală de {fmt_ratio_pct(lc2)}, o lichiditate redusă (fără stocuri) de {fmt_ratio_pct(lr2)} și o lichiditate imediată (efectivă) de {fmt_ratio_pct(li2)}.",
-            ],
+    elif lc2 >= 1.0:
+        liq_verdict = (
+            f"În perioada de raportare 2 se înregistrează {detaliu}: activele circulante acoperă datoriile pe termen scurt "
+            f"({fmt_money(bf.datorii_termen_scurt[2])} lei), dar fără marja de siguranță recomandată."
         )
     else:
         liq_verdict = (
-            f"În perioada de raportare 2, lichiditatea curentă se situează la {fmt_ratio_pct(lc2)}, lichiditatea rapidă la {fmt_ratio_pct(lr2)}, iar lichiditatea imediată la {fmt_ratio_pct(li2)}, semnalând necesitatea sincronizării atente a încasărilor curente cu scadențarul datoriilor pe termen scurt ({fmt_money(bf.datorii_termen_scurt[2])} lei)."
+            f"În perioada de raportare 2 se înregistrează {detaliu}: activele circulante nu acoperă integral datoriile pe termen scurt "
+            f"({fmt_money(bf.datorii_termen_scurt[2])} lei), ceea ce impune sincronizarea atentă a încasărilor cu scadențarul plăților"
+            f" sau consolidarea surselor permanente."
         )
 
     add_paragraph(doc, f"Evaluarea capacității de plată pe termen scurt: Pe parcursul celor trei perioade, {traj_lc}. {liq_verdict}")

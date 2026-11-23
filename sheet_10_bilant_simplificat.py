@@ -44,7 +44,7 @@ def compute_sheet_10_bilant_simplificat(
 ) -> BilantSimplificatResult:
     return BilantSimplificatResult(
         ain=bf.active_imobilizate,
-        disponibil=bf.disponibilitati,
+        disponibil=ef.trez_activa,
         ac_fara_disp=ef.ac_fara_disp,
         total_activ=bf.total_activ,
         cp_perm=bf.capitaluri_permanente,
@@ -88,7 +88,7 @@ def render_sheet_10_bilant_simplificat(
             fmt_ratio_pct(safe_div(res.ain[2], res.total_activ[2])),
         ],
         [
-            "Disponibil — Trezorerie activă (Activ)",
+            "Disponibil + investiții TS — Trezorerie activă (Activ)",
             fmt_money(res.disponibil[0]),
             fmt_ratio_pct(safe_div(res.disponibil[0], res.total_activ[0])),
             fmt_money(res.disponibil[1]),

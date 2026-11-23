@@ -42,6 +42,10 @@ class EchilibruFinanciarResult:
     diag_nfr: Tuple[str, str, str]     # EFTS sau NFCE
     diag_tn: Tuple[str, str, str]      # EFC sau DFT
     semnal_tn_fr: Tuple[str, str, str]
+    dts_nefin: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    trez_activa: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    trez_pasiva: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    check: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 def compute_sheet_07_echilibrul_financiar(
@@ -52,7 +56,10 @@ def compute_sheet_07_echilibrul_financiar(
     ac = bf.active_circulante
     dts = sf.dts
     cp = sf.cp
-    disp = bf.disponibilitati
+    # Trezoreria activă = disponibilități + investiții financiare pe termen scurt;
+    # trezoreria pasivă = credite bancare pe termen scurt (ct. 519, descoperit de cont 512).
+    trez_activa = tuple(round(bf.disponibilitati[p] + bf.investitii_ts[p], 2) for p in range(3))
+    trez_pasiva = bf.credite_trezorerie
 
     fr_sus = tuple(round(cperm[p] - ai[p], 2) for p in range(3))
     fr_jos = tuple(round(ac[p] - dts[p], 2) for p in range(3))
@@ -60,18 +67,21 @@ def compute_sheet_07_echilibrul_financiar(
     frp = tuple(round(cp[p] - ai[p], 2) for p in range(3))
     frs = tuple(round(fr_sus[p] - frp[p], 2) for p in range(3))
 
-    ac_fara_disp = tuple(round(ac[p] - disp[p], 2) for p in range(3))
-    nfr = tuple(round(ac_fara_disp[p] - dts[p], 2) for p in range(3))
+    # NFR = (stocuri + creanțe) - (datorii pe termen scurt fără creditele de trezorerie)
+    ac_fara_disp = tuple(round(ac[p] - trez_activa[p], 2) for p in range(3))
+    dts_nefin = tuple(round(dts[p] - trez_pasiva[p], 2) for p in range(3))
+    nfr = tuple(round(ac_fara_disp[p] - dts_nefin[p], 2) for p in range(3))
 
-    tn = tuple(round(fr_sus[p] - nfr[p], 2) for p in range(3))
+    # TN calculat direct (trezorerie activă - pasivă); identitatea TN = FR - NFR se verifică.
+    tn = tuple(round(trez_activa[p] - trez_pasiva[p], 2) for p in range(3))
+    check = tuple(round(fr_sus[p] - nfr[p] - tn[p], 2) for p in range(3))
 
     diag_fr = tuple("EFTL" if fr_sus[p] >= 0 else "DFTL" for p in range(3))
     diag_nfr = tuple("EFTS" if fr_sus[p] >= nfr[p] else "NFCE" for p in range(3))
     diag_tn = tuple("EFC" if tn[p] >= 0 else "DFT" for p in range(3))
+    # TN > FR apare când NFR < 0: trezoreria este alimentată din resurse temporare de exploatare.
     semnal_tn_fr = tuple(
-        "Semnal nefavorabil (TN > FR)"
-        if tn[p] > fr_sus[p]
-        else "Semnal favorabil (TN <= FR)"
+        "TN > FR (trezorerie finanțată din NFR negativ)" if tn[p] > fr_sus[p] else "TN ≤ FR"
         for p in range(3)
     )
 
@@ -87,6 +97,10 @@ def compute_sheet_07_echilibrul_financiar(
         diag_nfr=diag_nfr,
         diag_tn=diag_tn,
         semnal_tn_fr=semnal_tn_fr,
+        dts_nefin=dts_nefin,
+        trez_activa=trez_activa,
+        trez_pasiva=trez_pasiva,
+        check=check,
     )
 
 
@@ -117,9 +131,9 @@ def render_sheet_07_echilibrul_financiar(
         ("3. Fondul de rulment propriu (FRP = CP - AI)", ef.frp, "FRP > 0" if ef.frp[2] >= 0 else "FRP < 0", True),
         ("4. Fondul de rulment străin (FRS = FR - FRP = DTL)", ef.frs, "DTL", False),
         ("5. Active circulante fără disponibil (Stocuri + Creanțe)", ef.ac_fara_disp, "—", False),
-        ("6. Datorii pe termen scurt (DTS)", sf.dts, "—", False),
-        ("7. Necesarul de fond de rulment (NFR = AC fără disp. - DTS)", ef.nfr, ef.diag_nfr[2], True),
-        ("8. Trezoreria netă (TN = FR - NFR = Disponibil)", ef.tn, ef.diag_tn[2], True),
+        ("6. Datorii pe termen scurt fără creditele de trezorerie", ef.dts_nefin, "—", False),
+        ("7. Necesarul de fond de rulment (NFR = rd. 5 - rd. 6)", ef.nfr, ef.diag_nfr[2], True),
+        ("8. Trezoreria netă (TN = Disponibil + Inv. TS - Credite TS = FR - NFR)", ef.tn, ef.diag_tn[2], True),
     ]
 
     rows = []
@@ -175,8 +189,19 @@ def render_sheet_07_echilibrul_financiar(
             f"În perioada de raportare 2, raportul dintre Fondul de rulment (FR = {fmt_money(ef.fr_sus[2])} lei, FRP = {fmt_money(ef.frp[2])} lei -> {ef.diag_fr[2]}) și Necesarul de fond de rulment (NFR = {fmt_money(ef.nfr[2])} lei -> {ef.diag_nfr[2]}) determină o Trezorerie netă de {fmt_money(ef.tn[2])} lei ({ef.diag_tn[2]})."
         )
 
+    ok_sus_jos = all(abs(ef.fr_sus[p] - ef.fr_jos[p]) <= 0.05 for p in range(3))
+    ok_tn = all(abs(c) <= 0.05 for c in ef.check)
+    if ok_sus_jos and ok_tn:
+        verif = "Fondul de rulment calculat „de sus” (CPERM - AI) este egal cu cel calculat „de jos” (AC - DTS), iar identitatea TN = FR - NFR se verifică în toate perioadele"
+    else:
+        verif = "ATENȚIE: identitățile FR (sus) = FR (jos) și TN = FR - NFR nu se verifică în toate perioadele, ceea ce indică un bilanț neechilibrat"
+    asoc2 = bf.imprumuturi_asociati[2]
+    asoc_txt = (
+        f" Datoriile pe termen scurt includ împrumuturile asociaților (ct. 455) de {fmt_money(asoc2)} lei, care, fiind tratate ca datorii de exploatare, reduc NFR; dacă acestea au caracter permanent, ar trebui privite ca resurse stabile, ceea ce ar majora corespunzător FR."
+        if asoc2 > 0.005
+        else ""
+    )
     add_paragraph(
         doc,
-        f"Diagnostic de echilibru financiar: Egalitatea dintre abordarea patrimonială de sus și cea de jos a bilanțului este "
-        f"verificată în fiecare perioadă; {traj_fr}, în timp ce {traj_tn}. {eq_msg}",
+        f"Diagnostic de echilibru financiar: {verif}; {traj_fr}, în timp ce {traj_tn}. {eq_msg}{asoc_txt}",
     )

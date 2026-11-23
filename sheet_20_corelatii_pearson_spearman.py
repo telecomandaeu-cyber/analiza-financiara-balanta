@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Capitolul 20: Analiza Corelațiilor Statistice Parametrice (Pearson) și Neparametrice (Spearman).
-Verifică intensitatea și sensul legăturilor stocastice dintre cele 24 de perechi de indicatori
-economico-financiari pe seria celor trei perioade de raportare (0, 1 și 2).
+Capitolul 20: Analiza Corelațiilor Statistice (Pearson și Spearman).
+
+Corelațiile se calculează doar pentru indicatorii de stoc (bilanțieri), care au valori în
+toate cele trei momente (P0, P1, P2). Indicatorii de flux (cifra de afaceri, rezultatele,
+scorurile de risc) nu au valori în P0 și sunt cumulați pe intervale diferite, deci nu pot
+forma serii comparabile.
+
+Cu doar n = 3 observații, coeficienții au valoare DESCRIPTIVĂ: testul t pentru r are un
+singur grad de libertate, iar pragul de semnificație de 5% cere |r| ≥ 0,997. Rangurile
+Spearman folosesc media rangurilor la egalitate (r_s = Pearson aplicat pe ranguri).
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from docx import Document
 
@@ -18,11 +25,9 @@ from core_balanta import (
     BalantaData,
     add_heading,
     add_paragraph,
-    fmt_money,
+    all_ok,
     fmt_num,
-    fmt_pct,
     make_table,
-    pick_variant,
 )
 from sheet_01_bilant import BilantResult
 from sheet_02_cpp import CPPResult
@@ -34,6 +39,8 @@ from sheet_09_solvabilitatea import SolvabilitateResult
 from sheet_13_sig import SIGResult
 from sheet_17_riscul_faliment import RiscFalimentResult
 
+Triple = Tuple[float, float, float]
+
 
 @dataclass
 class CorrelationPairResult:
@@ -41,19 +48,14 @@ class CorrelationPairResult:
     name_x: str
     name_y: str
     pair_title: str
-    x_vals: Tuple[float, float, float]
-    y_vals: Tuple[float, float, float]
-    is_ratio_x: bool
-    is_ratio_y: bool
-    pearson_r: float
+    x_vals: Triple
+    y_vals: Triple
+    pearson_r: Optional[float]
     calificativ: str
-    ranks_x: Tuple[float, float, float]
-    ranks_y: Tuple[float, float, float]
-    d_vals: Tuple[float, float, float]
-    d2_vals: Tuple[float, float, float]
-    sum_d2: float
-    six_sum_d2: float
-    spearman_rs: float
+    ranks_x: Triple
+    ranks_y: Triple
+    spearman_rs: Optional[float]
+    p_value: Optional[float]
 
 
 @dataclass
@@ -61,35 +63,51 @@ class CorelatiiResult:
     pairs: List[CorrelationPairResult] = field(default_factory=list)
 
 
-def _calc_rank_desc(vals: Sequence[float]) -> Tuple[float, float, float]:
+def _avg_ranks(vals: Sequence[float]) -> Triple:
+    """Ranguri descrescătoare (1 = cea mai mare valoare), cu media rangurilor la egalitate."""
     ranks = []
     for v in vals:
-        r = 1 + sum(1 for other in vals if other > v + 1e-12)
-        ranks.append(float(r))
+        greater = sum(1 for o in vals if o > v + 1e-9)
+        equal = sum(1 for o in vals if abs(o - v) <= 1e-9)
+        ranks.append(greater + (equal + 1) / 2.0)
     return (ranks[0], ranks[1], ranks[2])
 
 
-def _calc_pearson(x: Sequence[float], y: Sequence[float]) -> float:
+def _pearson(x: Sequence[float], y: Sequence[float]) -> Optional[float]:
+    if not all_ok(*x, *y):
+        return None
     n = len(x)
-    mx = sum(x) / n
-    my = sum(y) / n
+    mx, my = sum(x) / n, sum(y) / n
     num = sum((x[i] - mx) * (y[i] - my) for i in range(n))
-    den_x = math.sqrt(sum((x[i] - mx) ** 2 for i in range(n)))
-    den_y = math.sqrt(sum((y[i] - my) ** 2 for i in range(n)))
-    if den_x < 1e-12 or den_y < 1e-12:
+    dx = math.sqrt(sum((v - mx) ** 2 for v in x))
+    dy = math.sqrt(sum((v - my) ** 2 for v in y))
+    if dx < 1e-9 * max(1.0, abs(mx)) or dy < 1e-9 * max(1.0, abs(my)):
+        return None  # serie constantă: corelația nu este definită
+    return max(-1.0, min(1.0, num / (dx * dy)))
+
+
+def _p_value_n3(r: Optional[float]) -> Optional[float]:
+    """p bilateral pentru H0: ρ = 0 cu n = 3 (t cu 1 grad de libertate = distribuția Cauchy)."""
+    if r is None:
+        return None
+    if abs(r) >= 1.0 - 1e-12:
         return 0.0
-    return num / (den_x * den_y)
+    t = abs(r) / math.sqrt(1.0 - r * r)
+    return 1.0 - (2.0 / math.pi) * math.atan(t)
 
 
-def _calificativ_pearson(r: float) -> str:
+def _calificativ(r: Optional[float]) -> str:
+    if r is None:
+        return "n.d. (serie constantă)"
     ar = abs(r)
-    if ar >= 0.745:
-        return "Corelație optimă"
+    sens = "directă" if r >= 0 else "inversă"
+    if ar >= 0.75:
+        return f"Corelație puternică {sens}"
     if ar >= 0.50:
-        return "Corelație bună"
+        return f"Corelație moderată {sens}"
     if ar >= 0.25:
-        return "Corelație moderată"
-    return "Corelație slabă"
+        return f"Corelație slabă {sens}"
+    return "Corelație neglijabilă"
 
 
 def compute_sheet_20_corelatii(
@@ -103,138 +121,79 @@ def compute_sheet_20_corelatii(
     sig: SIGResult,
     risc: RiscFalimentResult,
 ) -> CorelatiiResult:
-    """Construiește cele 24 de perechi de corelații Pearson și Spearman pe perioadele de raportare 0, 1 și 2."""
+    """Corelații Pearson și Spearman pe seriile bilanțiere complete (P0, P1, P2)."""
     res = CorelatiiResult()
-
     pair_defs = [
-        (1, "Activele imobilizate", "Cifra de afaceri", "Activele imobilizate și Cifra de afaceri", bf.active_imobilizate, cpp.cifra_afaceri, False, False),
-        (2, "Activele circulante", "Cifra de afaceri", "Activele circulante și Cifra de afaceri", bil.rd(9), cpp.cifra_afaceri, False, False),
-        (3, "Lichiditatea generală", "Solvabilitatea generală", "Lichiditatea generală și Solvabilitatea generală", liq.l_curenta, solv.solv_generala, True, True),
-        (4, "Lichiditatea rapidă", "Lichiditatea generală", "Lichiditatea rapidă și Lichiditatea generală", liq.l_rapida, liq.l_curenta, True, True),
-        (5, "Lichiditatea imediată", "Lichiditatea rapidă", "Lichiditatea imediată și Lichiditatea rapidă", liq.l_imediata, liq.l_rapida, True, True),
-        (6, "Fondul de rulment", "Necesarul de fond de rulment", "Fondul de rulment și Necesarul de fond de rulment", ef.fr_sus, ef.nfr, False, False),
-        (7, "Fondul de rulment", "Trezoreria netă", "Fondul de rulment și Trezoreria netă", ef.fr_sus, ef.tn, False, False),
-        (8, "Activele imobilizate", "Capitalurile permanente", "Activele imobilizate și Capitalurile permanente", bf.active_imobilizate, sf.cperm, False, False),
-        (9, "Activele circulante", "Datoriile de exploatare", "Activele circulante și Datoriile de exploatare", bf.active_circulante, sf.dts, False, False),
-        (10, "Capitaluri proprii", "Active imobilizate", "Capitaluri proprii și Active imobilizate", sf.cp, bf.active_imobilizate, False, False),
-        (11, "Capitaluri proprii", "Capitaluri permanente", "Capitaluri proprii și Capitaluri permanente", sf.cp, sf.cperm, False, False),
-        (12, "Capitaluri proprii", "Datorii pe termen lung", "Capitaluri proprii și Datorii pe termen lung", sf.cp, sf.dtl, False, False),
-        (13, "Capitaluri proprii", "Datorii de exploatare", "Capitaluri proprii și Datorii de exploatare", sf.cp, sf.dts, False, False),
-        (14, "Capitaluri permanente", "Datorii de exploatare", "Capitaluri permanente și Datorii de exploatare", sf.cperm, sf.dts, False, False),
-        (15, "Datorii pe termen lung", "Datorii de exploatare", "Datorii pe termen lung și Datorii de exploatare", sf.dtl, sf.dts, False, False),
-        (16, "Valoarea adăugată", "Excedentul brut de exploatare", "Valoarea adăugată și Excedentul brut de exploatare", sig.valoarea_adaugata, sig.ebe, False, False),
-        (17, "Excedentul brut de exploatare", "Rezultatul exploatării", "Excedentul brut de exploatare și Rezultatul exploatării", sig.ebe, sig.rezultat_exploatare, False, False),
-        (18, "Rezultatul exploatării", "Rezultatul curent/brut", "Rezultatul exploatării și Rezultatul curent/brut", sig.rezultat_exploatare, sig.rezultat_curent, False, False),
-        (19, "Cifra de afaceri", "Riscul Altman", "Cifra de afaceri și Riscul de insolvență Altman", cpp.cifra_afaceri, risc.z_altman, False, True),
-        (20, "Datorii totale", "Riscul Altman", "Datorii totale și Riscul de insolvență Altman", sf.dtot, risc.z_altman, False, True),
-        (21, "Fondul de rulment", "Riscul Altman", "Fondul de rulment și Riscul de insolvență Altman", ef.fr_sus, risc.z_altman, False, True),
-        (22, "Valoarea adăugată", "Riscul Conan-Holder", "Valoarea adăugată și Riscul de insolvență Conan-Holder", sig.valoarea_adaugata, risc.z_canon_holder, False, True),
-        (23, "Cifra de afaceri", "Riscul Conan-Holder", "Cifra de afaceri și Riscul de insolvență Conan-Holder", cpp.cifra_afaceri, risc.z_canon_holder, False, True),
-        (24, "Cheltuieli cu personalul", "Riscul Conan-Holder", "Cheltuielile cu personalul și Riscul de insolvență Conan-Holder", cpp.rd(18), risc.z_canon_holder, False, True),
+        ("Lichiditatea curentă", "Solvabilitatea generală", liq.l_curenta, solv.solv_generala),
+        ("Lichiditatea rapidă", "Lichiditatea curentă", liq.l_rapida, liq.l_curenta),
+        ("Lichiditatea imediată", "Lichiditatea rapidă", liq.l_imediata, liq.l_rapida),
+        ("Fondul de rulment", "Necesarul de fond de rulment", ef.fr_sus, ef.nfr),
+        ("Fondul de rulment", "Trezoreria netă", ef.fr_sus, ef.tn),
+        ("Activele imobilizate", "Capitalurile permanente", bf.active_imobilizate, sf.cperm),
+        ("Activele circulante", "Datoriile pe termen scurt", bf.active_circulante, sf.dts),
+        ("Capitalurile proprii", "Activele imobilizate", sf.cp, bf.active_imobilizate),
+        ("Capitalurile proprii", "Datoriile pe termen lung", sf.cp, sf.dtl),
+        ("Capitalurile proprii", "Datoriile pe termen scurt", sf.cp, sf.dts),
+        ("Datoriile pe termen lung", "Datoriile pe termen scurt", sf.dtl, sf.dts),
+        ("Stocurile", "Datoriile pe termen scurt", bf.stocuri, sf.dts),
+        ("Creanțele", "Disponibilitățile bănești", bf.creante, bf.disponibilitati),
     ]
-
-    for idx, nx, ny, title, xv, yv, rx_flag, ry_flag in pair_defs:
-        pr = _calc_pearson(xv, yv)
-        cal = _calificativ_pearson(pr)
-        rk_x = _calc_rank_desc(xv)
-        rk_y = _calc_rank_desc(yv)
-        d_v = tuple(rk_y[i] - rk_x[i] for i in range(3))
-        d2_v = tuple(d_v[i] ** 2 for i in range(3))
-        sum_d2 = sum(d2_v)
-        six_sum = 6.0 * sum_d2
-        rs = 1.0 - (six_sum / 24.0)
-
+    for i, (nx, ny, xv, yv) in enumerate(pair_defs, start=1):
+        r = _pearson(xv, yv)
+        rkx, rky = _avg_ranks(xv), _avg_ranks(yv)
+        rs = _pearson(rkx, rky)
         res.pairs.append(
             CorrelationPairResult(
-                idx=idx,
+                idx=i,
                 name_x=nx,
                 name_y=ny,
-                pair_title=title,
+                pair_title=f"{nx} și {ny}",
                 x_vals=xv,
                 y_vals=yv,
-                is_ratio_x=rx_flag,
-                is_ratio_y=ry_flag,
-                pearson_r=pr,
-                calificativ=cal,
-                ranks_x=rk_x,
-                ranks_y=rk_y,
-                d_vals=d_v,
-                d2_vals=d2_v,
-                sum_d2=sum_d2,
-                six_sum_d2=six_sum,
+                pearson_r=r,
+                calificativ=_calificativ(r),
+                ranks_x=rkx,
+                ranks_y=rky,
                 spearman_rs=rs,
+                p_value=_p_value_n3(r),
             )
         )
-
     return res
 
 
-def render_sheet_20_corelatii(doc: Document, bal: BalantaData, res: CorelatiiResult) -> None:
-    """Generează secțiunea Corelațiilor Statistice Pearson și Spearman într-un singur tabel centralizator."""
-    add_heading(doc, "20. Analiza Corelațiilor Statistice Parametrice (Pearson) și Neparametrice (Spearman)", level=1)
+def _fmt_rank(v: float) -> str:
+    return str(int(v)) if abs(v - round(v)) < 1e-9 else fmt_num(v, 1)
 
-    headers_syn = [
-        "Nr.",
-        "Perechea de Indicatori Corelați (X și Y)",
-        "Ranguri X (P0, P1, P2)",
-        "Ranguri Y (P0, P1, P2)",
-        "Σ d²",
-        "6·Σ d²",
-        "Spearman (r_s)",
-        "Pearson (r)",
-        "Intensitate Corelație",
-    ]
-    rows_syn = []
+
+def render_sheet_20_corelatii(doc: Document, bal: BalantaData, res: CorelatiiResult) -> None:
+    """Generează secțiunea Corelațiilor Statistice."""
+    add_heading(doc, "20. Analiza Corelațiilor Statistice (Pearson și Spearman) între Indicatorii Bilanțieri", level=1)
+
+    headers = ["Nr.", "Perechea de indicatori (X și Y)", "Ranguri X", "Ranguri Y", "Spearman r_s", "Pearson r", "p (n = 3)", "Intensitate"]
+    rows = []
     for p in res.pairs:
-        rx_str = f"({int(p.ranks_x[0])}, {int(p.ranks_x[1])}, {int(p.ranks_x[2])})"
-        ry_str = f"({int(p.ranks_y[0])}, {int(p.ranks_y[1])}, {int(p.ranks_y[2])})"
-        rows_syn.append([
+        rows.append([
             f"{p.idx:02d}",
             p.pair_title,
-            rx_str,
-            ry_str,
-            fmt_num(p.sum_d2, 0),
-            fmt_num(p.six_sum_d2, 0),
+            "(" + ", ".join(_fmt_rank(v) for v in p.ranks_x) + ")",
+            "(" + ", ".join(_fmt_rank(v) for v in p.ranks_y) + ")",
             fmt_num(p.spearman_rs, 2),
             fmt_num(p.pearson_r, 4),
+            fmt_num(p.p_value, 3),
             p.calificativ,
         ])
+    make_table(doc, headers=headers, rows=rows, col_widths=[0.8, 6.0, 1.6, 1.6, 1.4, 1.5, 1.3, 2.6], font_size=7.6)
 
-    make_table(
+    valid = [p for p in res.pairs if p.pearson_r is not None]
+    strong = [p for p in valid if abs(p.pearson_r) >= 0.75]
+    signif = [p for p in valid if p.p_value is not None and p.p_value < 0.05]
+    top = sorted(valid, key=lambda p: abs(p.pearson_r), reverse=True)[:2]
+    top_txt = "; ".join(f"«{p.pair_title}» (r = {fmt_num(p.pearson_r, 4)})" for p in top) if top else "—"
+    add_paragraph(
         doc,
-        headers=headers_syn,
-        rows=rows_syn,
-        col_widths=[0.8, 5.7, 1.8, 1.8, 1.0, 1.1, 1.4, 1.5, 2.3],
-        font_size=7.6,
+        f"Sinteză statistică: din {len(res.pairs)} perechi de indicatori bilanțieri, {len(strong)} prezintă o corelație "
+        f"puternică (|r| ≥ 0,75), cele mai intense fiind {top_txt}. Seria are însă doar trei observații (P0, P1, P2), astfel încât "
+        f"{len(signif)} perechi ating pragul de semnificație statistică de 5% (|r| ≥ 0,997); coeficienții descriu sensul "
+        f"evoluțiilor comune pe intervalul analizat și nu trebuie interpretați ca relații cauzale sau stabile. Indicatorii de flux "
+        f"(cifra de afaceri, rezultatele, scorurile de risc) au fost excluși, deoarece nu au valori pentru perioada de raportare 0.",
     )
-
-    nb_opt = sum(1 for p in res.pairs if p.calificativ == "Corelație optimă")
-    nb_buna = sum(1 for p in res.pairs if p.calificativ == "Corelație bună")
-    pct_opt = (nb_opt / len(res.pairs)) * 100.0 if res.pairs else 0.0
-
-    pos_sorted = sorted(res.pairs, key=lambda x: x.pearson_r, reverse=True)
-    neg_sorted = sorted(res.pairs, key=lambda x: x.pearson_r)
-    top_pos1 = pos_sorted[0] if pos_sorted else None
-    top_pos2 = pos_sorted[1] if len(pos_sorted) > 1 else None
-    top_neg1 = neg_sorted[0] if neg_sorted else None
-
-    pos_txt = (
-        f"«{top_pos1.pair_title}» (r = {fmt_num(top_pos1.pearson_r, 4)}, r_s = {fmt_num(top_pos1.spearman_rs, 2)}) și «{top_pos2.pair_title}» (r = {fmt_num(top_pos2.pearson_r, 4)})"
-        if top_pos1 and top_pos2
-        else "indicatorii patrimoniali"
-    )
-    neg_txt = (
-        f"«{top_neg1.pair_title}» (r = {fmt_num(top_neg1.pearson_r, 4)}, r_s = {fmt_num(top_neg1.spearman_rs, 2)})"
-        if top_neg1 and top_neg1.pearson_r < 0
-        else "perechile cu evoluție divergentă"
-    )
-
-    s20_msg = pick_variant(
-        bal,
-        "s20_corr",
-        [
-            f"Sinteză statistică: Din totalul celor {len(res.pairs)} de perechi de indicatori evaluate pe seria celor trei perioade de raportare (n = 3), {nb_opt} perechi ({fmt_pct(pct_opt)}) obțin calificativul «Corelație optimă» (|r| >= 0,75), iar {nb_buna} perechi obțin «Corelație bună». Cele mai puternice legături directe se înregistrează între {pos_txt}, în timp ce cea mai pronunțată relație inversă apare la perechea {neg_txt}, reflectând coerența evoluțiilor patrimoniale și de performanță.",
-            f"Evaluarea matricii de corelație: Pe ansamblul celor {len(res.pairs)} de legături testate parametric (Pearson r) și neparametric (Spearman r_s), {nb_opt} cupluri de indicatori ({fmt_pct(pct_opt)}) prezintă o intensitate stocastică foarte puternică (|r| >= 0,75). Se evidențiază corelațiile pozitive de vârf {pos_txt} și corelația inversă {neg_txt}, care confirmă sincronizarea dintre dinamica activității și structura de finanțare.",
-        ],
-    )
-    add_paragraph(doc, s20_msg)

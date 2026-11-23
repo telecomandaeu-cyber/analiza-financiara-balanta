@@ -40,9 +40,17 @@ def compute_sheet_12_echilibru_dinamic(es: EchilibruStaticResult) -> EchilibruDi
     d_nfr = calc_delta(es.nfr)
     d_tn = calc_delta(es.tn)
 
-    interp_fr = tuple("EFTL" if d_fr[i] >= 0 else "DFTL" for i in (0, 1))
-    interp_nfr = tuple("EFTS" if d_fr[i] >= d_nfr[i] else "NFCE" for i in (0, 1))
-    interp_tn = tuple("EFC" if d_tn[i] >= 0 else "DFT" for i in (0, 1))
+    # Variațiile se interpretează ca fluxuri: ΔFR ≥ 0 consolidează finanțarea stabilă,
+    # ΔNFR > 0 reprezintă o nevoie suplimentară de finanțare a exploatării, iar ΔTN = ΔFR - ΔNFR.
+    interp_fr = tuple(
+        "Semnal favorabil (ΔFR ≥ 0)" if d_fr[i] >= 0 else "Semnal nefavorabil (ΔFR < 0)" for i in (0, 1)
+    )
+    interp_nfr = tuple(
+        "Semnal favorabil (ΔFR ≥ ΔNFR)" if d_fr[i] >= d_nfr[i] else "Semnal nefavorabil (ΔNFR > ΔFR)" for i in (0, 1)
+    )
+    interp_tn = tuple(
+        "Semnal favorabil (ΔTN ≥ 0)" if d_tn[i] >= 0 else "Semnal nefavorabil (ΔTN < 0)" for i in (0, 1)
+    )
 
     return EchilibruDinamicResult(
         d_fr=d_fr,

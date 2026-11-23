@@ -35,7 +35,7 @@ ANALIZA_DIR = CURRENT_DIR if (CURRENT_DIR / "core_balanta.py").exists() else (CU
 if str(ANALIZA_DIR) not in sys.path:
     sys.path.insert(0, str(ANALIZA_DIR))
 
-from analiza_financiara import generate_full_financial_report
+from analiza_financiara import build_kpi_rows, compute_all, generate_full_financial_report
 from core_balanta import (
     extract_word_report_blocks,
     fmt_money,
@@ -44,19 +44,6 @@ from core_balanta import (
     fmt_ratio_pct,
     parse_balanta_pdf,
 )
-from sheet_01_bilant import compute_sheet_01_bilant
-from sheet_02_cpp import compute_sheet_02_cpp
-from sheet_03_bilant_financiar import compute_sheet_03_bilant_financiar
-from sheet_05_structura_financiara import compute_sheet_05_structura_financiara
-from sheet_06_ratele_pasivului import compute_sheet_06_ratele_pasivului
-from sheet_07_echilibrul_financiar import compute_sheet_07_echilibrul_financiar
-from sheet_08_lichiditatea import compute_sheet_08_lichiditatea
-from sheet_09_solvabilitatea import compute_sheet_09_solvabilitatea
-from sheet_13_sig import compute_sheet_13_sig
-from sheet_14_caf import compute_sheet_14_caf
-from sheet_16_efectul_indatorare import compute_sheet_16_efectul_indatorare
-from sheet_17_riscul_faliment import compute_sheet_17_riscul_faliment
-from sheet_19_indicatori_profitabilitate import compute_sheet_19_indicatori_profitabilitate
 
 # Registru în memorie cu rapoartele generate și lacăt pentru execuție concurentă în rețea
 GENERATED_FILES: Dict[str, Path] = {}
@@ -107,19 +94,10 @@ def run_analysis_and_build_payload(pdf_path: Path) -> Dict[str, Any]:
     """
     bal = parse_balanta_pdf(pdf_path)
 
-    s01_bil = compute_sheet_01_bilant(bal)
-    s02_cpp = compute_sheet_02_cpp(bal, s01_bil)
-    s03_bf = compute_sheet_03_bilant_financiar(s01_bil)
-    s05_sf = compute_sheet_05_structura_financiara(s03_bf)
-    s06_rp = compute_sheet_06_ratele_pasivului(s05_sf)
-    s07_ef = compute_sheet_07_echilibrul_financiar(s03_bf, s05_sf)
-    s08_liq = compute_sheet_08_lichiditatea(s03_bf, s01_bil)
-    s09_solv = compute_sheet_09_solvabilitatea(s03_bf, s05_sf, s01_bil)
-    s13_sig = compute_sheet_13_sig(s02_cpp)
-    s14_caf = compute_sheet_14_caf(s02_cpp, s13_sig)
-    s16_lev = compute_sheet_16_efectul_indatorare(s03_bf, s05_sf, s02_cpp)
-    s17_risc = compute_sheet_17_riscul_faliment(s01_bil, s02_cpp, s03_bf, s05_sf, s07_ef, s13_sig)
-    s19_prof = compute_sheet_19_indicatori_profitabilitate(s03_bf, s02_cpp)
+    r = compute_all(bal)
+    s01_bil, s02_cpp, s03_bf, s05_sf = r["s01"], r["s02"], r["s03"], r["s05"]
+    s06_rp, s07_ef, s08_liq, s09_solv = r["s06"], r["s07"], r["s08"], r["s09"]
+    s13_sig, s14_caf, s16_lev, s17_risc, s19_prof = r["s13"], r["s14"], r["s16"], r["s17"], r["s19"]
 
     with REPORT_LOCK:
         docx_path = generate_full_financial_report(pdf_path)
@@ -128,8 +106,6 @@ def run_analysis_and_build_payload(pdf_path: Path) -> Dict[str, Any]:
         report_content = extract_word_report_blocks(docx_path)
 
     g_cp = (s05_sf.cp[2] - s05_sf.cp[0]) / abs(s05_sf.cp[0]) if abs(s05_sf.cp[0]) > 1e-6 else 0.0
-    g_rn = (s13_sig.rezultat_net[2] - s13_sig.rezultat_net[0]) / abs(s13_sig.rezultat_net[0]) if abs(s13_sig.rezultat_net[0]) > 1e-6 else 0.0
-    g_caf = (s14_caf.caf_deductiv[2] - s14_caf.caf_deductiv[0]) / abs(s14_caf.caf_deductiv[0]) if abs(s14_caf.caf_deductiv[0]) > 1e-6 else 0.0
 
     cards = [
         {
@@ -137,8 +113,8 @@ def run_analysis_and_build_payload(pdf_path: Path) -> Dict[str, Any]:
             "p0": f"{fmt_money(s03_bf.total_activ[0])} lei",
             "p1": f"{fmt_money(s03_bf.total_activ[1])} lei",
             "p2": f"{fmt_money(s03_bf.total_activ[2])} lei",
-            "badge": "Echilibru Bilanțier",
-            "tone": "good",
+            "badge": "Bilanț echilibrat" if s01_bil.echilibrat else "Diferențe Activ - Pasiv",
+            "tone": "good" if s01_bil.echilibrat else "bad",
         },
         {
             "title": "Capitaluri Proprii (Activ Net)",
@@ -153,15 +129,15 @@ def run_analysis_and_build_payload(pdf_path: Path) -> Dict[str, Any]:
             "p0": f"{fmt_money(s19_prof.blocks[0].den_vals[0])} lei",
             "p1": f"{fmt_money(s19_prof.blocks[0].den_vals[1])} lei",
             "p2": f"{fmt_money(s19_prof.blocks[0].den_vals[2])} lei",
-            "badge": f"ROS: {fmt_pct(s19_prof.ros[2])}",
+            "badge": f"Marja operațională: {fmt_pct(s19_prof.ros[2])}",
             "tone": "good",
         },
         {
-            "title": "Profit Net (Rezultatul Exercițiului)",
+            "title": "Rezultatul Net Cumulat",
             "p0": f"{fmt_money(s13_sig.rezultat_net[0])} lei",
             "p1": f"{fmt_money(s13_sig.rezultat_net[1])} lei",
             "p2": f"{fmt_money(s13_sig.rezultat_net[2])} lei",
-            "badge": f"ROE: {fmt_pct(s19_prof.roe[2])} | ROA: {fmt_pct(s19_prof.roa[2])}",
+            "badge": f"ROE an.: {fmt_pct(s19_prof.roe[2])} | ROA an.: {fmt_pct(s19_prof.roa[2])}",
             "tone": "good" if s13_sig.rezultat_net[2] > 0 else "bad",
         },
         {
@@ -177,97 +153,19 @@ def run_analysis_and_build_payload(pdf_path: Path) -> Dict[str, Any]:
             "p0": f"{fmt_money(s14_caf.caf_deductiv[0])} lei",
             "p1": f"{fmt_money(s14_caf.caf_deductiv[1])} lei",
             "p2": f"{fmt_money(s14_caf.caf_deductiv[2])} lei",
-            "badge": f"Scor Altman Z: {fmt_num(s17_risc.z_altman_ajustat[2], 2)}",
+            "badge": f"Scor Altman Z': {fmt_num(s17_risc.z_altman[2], 2)}",
             "tone": "good" if s14_caf.caf_deductiv[2] > 0 else "bad",
         },
     ]
 
-    kpi_rows = [
-        [
-            "1. Activ Total Bilanțier = Pasiv Total (lei)",
-            fmt_money(s03_bf.total_activ[0]),
-            fmt_money(s03_bf.total_activ[1]),
-            fmt_money(s03_bf.total_activ[2]),
-            "Corelație optimă",
-        ],
-        [
-            "2. Capitaluri Proprii — Activ Net Contabil (lei)",
-            fmt_money(s05_sf.cp[0]),
-            fmt_money(s05_sf.cp[1]),
-            fmt_money(s05_sf.cp[2]),
-            f"{'EFTL' if s05_sf.cp[2] > 0 else 'Dezechilibru'} ({fmt_ratio_pct(g_cp, plus_sign=True)})",
-        ],
-        [
-            "3. Rata Stabilității Financiare — RSF (%)",
-            fmt_ratio_pct(s06_rp.rsf[0]),
-            fmt_ratio_pct(s06_rp.rsf[1]),
-            fmt_ratio_pct(s06_rp.rsf[2]),
-            "Semnal favorabil (>50%)" if s06_rp.rsf[2] >= 0.50 else "Sub 50%",
-        ],
-        [
-            "4. Fondul de Rulment Patrimonial — FR (lei)",
-            fmt_money(s07_ef.fr_sus[0]),
-            fmt_money(s07_ef.fr_sus[1]),
-            fmt_money(s07_ef.fr_sus[2]),
-            "EFTL (FR > 0)" if s07_ef.fr_sus[2] >= 0 else "DFTL (FR < 0)",
-        ],
-        [
-            "5. Necesarul de Fond de Rulment — NFR (lei)",
-            fmt_money(s07_ef.nfr[0]),
-            fmt_money(s07_ef.nfr[1]),
-            fmt_money(s07_ef.nfr[2]),
-            "EFTS (FR > NFR)" if s07_ef.fr_sus[2] >= s07_ef.nfr[2] else "DFTS (FR < NFR)",
-        ],
-        [
-            "6. Trezoreria Netă — TN = FR - NFR (lei)",
-            fmt_money(s07_ef.tn[0]),
-            fmt_money(s07_ef.tn[1]),
-            fmt_money(s07_ef.tn[2]),
-            "EFC (TN > 0)" if s07_ef.tn[2] >= 0 else "DFC (TN < 0)",
-        ],
-        [
-            "7. Lichiditatea Curentă / Lichiditatea Imediată (%)",
-            f"{fmt_ratio_pct(s08_liq.l_curenta[0])} / {fmt_ratio_pct(s08_liq.l_imediata[0])}",
-            f"{fmt_ratio_pct(s08_liq.l_curenta[1])} / {fmt_ratio_pct(s08_liq.l_imediata[1])}",
-            f"{fmt_ratio_pct(s08_liq.l_curenta[2])} / {fmt_ratio_pct(s08_liq.l_imediata[2])}",
-            "Da (În plafon)" if 1.2 <= s08_liq.l_curenta[2] <= 2.0 else "În afara intervalului [120%-200%]",
-        ],
-        [
-            "8. Solvabilitatea Generală / Solvabilitatea Efectivă (%)",
-            f"{fmt_ratio_pct(s09_solv.solv_generala[0])} / {fmt_ratio_pct(s09_solv.solv_efectiva[0])}",
-            f"{fmt_ratio_pct(s09_solv.solv_generala[1])} / {fmt_ratio_pct(s09_solv.solv_efectiva[1])}",
-            f"{fmt_ratio_pct(s09_solv.solv_generala[2])} / {fmt_ratio_pct(s09_solv.solv_efectiva[2])}",
-            "Da (Solvabilitate >150%)" if s09_solv.solv_generala[2] >= 1.5 else "Sub plafonul de 150%",
-        ],
-        [
-            "9. Cifra de Afaceri Netă / Profitul Net (lei)",
-            f"{fmt_money(s19_prof.blocks[0].den_vals[0])} / {fmt_money(s13_sig.rezultat_net[0])}",
-            f"{fmt_money(s19_prof.blocks[0].den_vals[1])} / {fmt_money(s13_sig.rezultat_net[1])}",
-            f"{fmt_money(s19_prof.blocks[0].den_vals[2])} / {fmt_money(s13_sig.rezultat_net[2])}",
-            f"{'Profitabil' if s13_sig.rezultat_net[2] > 0 else 'Pierdere'} ({fmt_ratio_pct(g_rn, plus_sign=True)})",
-        ],
-        [
-            "10. Capacitatea de Autofinanțare — CAF (lei)",
-            fmt_money(s14_caf.caf_deductiv[0]),
-            fmt_money(s14_caf.caf_deductiv[1]),
-            fmt_money(s14_caf.caf_deductiv[2]),
-            f"{'Da' if s14_caf.caf_deductiv[2] > 0 else 'Nu'} ({fmt_ratio_pct(g_caf, plus_sign=True)})",
-        ],
-        [
-            "11. Rentabilități: ROA / ROE / Efect de Levier",
-            f"{fmt_pct(s19_prof.roa[0])} / {fmt_pct(s19_prof.roe[0])} / {fmt_ratio_pct(s16_lev.efect_levier[0], plus_sign=True)}",
-            f"{fmt_pct(s19_prof.roa[1])} / {fmt_pct(s19_prof.roe[1])} / {fmt_ratio_pct(s16_lev.efect_levier[1], plus_sign=True)}",
-            f"{fmt_pct(s19_prof.roa[2])} / {fmt_pct(s19_prof.roe[2])} / {fmt_ratio_pct(s16_lev.efect_levier[2], plus_sign=True)}",
-            s16_lev.verdict[2],
-        ],
-        [
-            "12. Scorul Z Altman (Standard / Ajustat fără ct. 472+475)",
-            f"{fmt_num(s17_risc.z_altman[0], 2)} / {fmt_num(s17_risc.z_altman_ajustat[0], 2)}",
-            f"{fmt_num(s17_risc.z_altman[1], 2)} / {fmt_num(s17_risc.z_altman_ajustat[1], 2)}",
-            f"{fmt_num(s17_risc.z_altman[2], 2)} / {fmt_num(s17_risc.z_altman_ajustat[2], 2)}",
-            "Solvabil (Z > 3,00)" if s17_risc.z_altman_ajustat[2] > 3.0 else ("Zonă incertă [1,8-3,0]" if s17_risc.z_altman_ajustat[2] >= 1.8 else "Risc insolvență (<1,8)"),
-        ],
-    ]
+    for card in cards:
+        for key in ("p0", "p1", "p2"):
+            card[key] = card[key].replace("n.d. lei", "n.d.")
+
+    kpi_rows = build_kpi_rows(
+        bal, s03_bf, s05_sf, s06_rp, s07_ef, s08_liq, s09_solv, s13_sig, s14_caf, s16_lev, s17_risc, s19_prof,
+        s01_bil.echilibrat,
+    )
 
     cls_rows = []
     for c_num in range(1, 8):

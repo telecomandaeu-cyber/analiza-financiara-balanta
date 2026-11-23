@@ -1,9 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Capitolul 2: Contul de Profit și Pierdere Sintetic (OMFP nr. 1802/2014).
-Se corelează cu Bilanțul Contabil pentru reconcilierea rezultatului net al exercițiului
-cu soldul contului 121 pe cele trei perioade de raportare (0, 1 și 2).
+Capitolul 2: Contul de Profit și Pierdere Sintetic (structura OMFP nr. 1802/2014).
+
+Veniturile și cheltuielile sunt rulaje CUMULATE de la începutul anului:
+  - Perioada de raportare 1: de la 01.01 până la finele lunii precedente;
+  - Perioada de raportare 2: de la 01.01 până la finele lunii de raportare.
+Perioada de raportare 0 (soldurile de deschidere de la 01.01) nu conține rulaje de venituri
+și cheltuieli, de aceea indicatorii de flux sunt marcați „n.d.” pentru P0 (nu se estimează).
+
+Fiecare cont de clasa 6 și 7 din balanță este repartizat pe un rând al CPP; conturile
+care nu au o încadrare specifică sunt incluse la „alte venituri/cheltuieli de exploatare”
+și semnalate, astfel încât rezultatul net să fie complet.
+Variația stocurilor de produse (ct. 711) se determină din modificarea soldurilor conturilor
+de produse și producție în curs (331, 332, 341, 345, 346, 347, 348, 354) față de 01.01,
+deoarece la închiderea lunară a contului 711 rulajele lui nu mai reflectă sensul variației.
 """
 
 from __future__ import annotations
@@ -14,18 +25,233 @@ from typing import Dict, List, Tuple
 from docx import Document
 
 from core_balanta import (
+    ND,
     BalantaData,
+    add_callout,
     add_heading,
     add_paragraph,
-    describe_trajectory,
+    all_ok,
+    describe_flow,
     fmt_money,
-    fmt_pct,
     fmt_ratio_pct,
     make_table,
     pick_variant,
     safe_div,
 )
-from sheet_01_bilant import BilantResult
+
+TOL = 0.05
+
+PRODUSE_STOC = ("331", "332", "341", "345", "346", "347", "348", "354")
+SPLIT_PARENTS = {"681", "741", "758", "658", "781", "786", "686", "666", "766"}
+
+ITEM_KEYS = (
+    "prod_vanduta", "venit_marfuri", "reduceri_acordate", "subv_ca", "var_stoc", "prod_imob", "subv_expl",
+    "alte_ven_expl", "ven_cedare", "ven_subv_inv", "ven_fc_neg", "creante_reactivate", "rel_prov",
+    "rel_ajust_imob", "rel_ajust_ac", "ven_fin", "rel_ajust_fin", "ven_extra",
+    "mat_prime", "alte_mat", "energie", "marfuri", "reduceri_primite", "prest_ext", "impozite_taxe",
+    "salarii", "asigurari", "pierderi_creante", "alte_ch_expl", "vnc_cedate", "amortizare", "ajust_prov",
+    "ajust_ac_ch", "ajust_fin_ch", "dobanzi", "alte_ch_fin", "ch_extra", "impozit_profit",
+)
+
+
+def _cpp_key(code: str) -> Tuple[str, str]:
+    """(cheie, natura) — natura „C” = rulaj creditor (venit), „D” = rulaj debitor (cheltuială)."""
+    c = code
+    c2, c3 = c[:2], c[:3]
+    if c[0] == "7":
+        if c3 in ("701", "702", "703", "704", "705", "706", "708"):
+            return "prod_vanduta", "C"
+        if c3 == "707":
+            return "venit_marfuri", "C"
+        if c3 == "709":
+            return "reduceri_acordate", "D"
+        if c3 in ("711", "712"):
+            return "var_stoc", "X"
+        if c2 == "72":
+            return "prod_imob", "C"
+        if c3 == "741":
+            return ("subv_ca", "C") if c.startswith("7411") else ("subv_expl", "C")
+        if c3 == "754":
+            return "creante_reactivate", "C"
+        if c.startswith("7583"):
+            return "ven_cedare", "C"
+        if c.startswith("7584"):
+            return "ven_subv_inv", "C"
+        if c2 == "75":
+            return "alte_ven_expl", "C"
+        if c3 == "781":
+            return {
+                "7812": "rel_prov", "7813": "rel_ajust_imob", "7814": "rel_ajust_ac", "7815": "ven_fc_neg",
+            }.get(c, "rel_ajust_imob"), "C"
+        if c3 == "786":
+            return "rel_ajust_fin", "C"
+        if c2 == "76":
+            return "ven_fin", "C"
+        if c2 == "77":
+            return "ven_extra", "C"
+        return "alte_ven_expl", "C?"
+    if c[0] == "6":
+        if c3 in ("601", "602"):
+            return "mat_prime", "D"
+        if c3 in ("603", "604", "606", "608"):
+            return "alte_mat", "D"
+        if c3 == "605":
+            return "energie", "D"
+        if c3 == "607":
+            return "marfuri", "D"
+        if c3 == "609":
+            return "reduceri_primite", "C"
+        if c2 in ("61", "62"):
+            return "prest_ext", "D"
+        if c2 == "63":
+            return "impozite_taxe", "D"
+        if c3 in ("641", "642", "643", "644"):
+            return "salarii", "D"
+        if c2 == "64":
+            return "asigurari", "D"
+        if c3 == "654":
+            return "pierderi_creante", "D"
+        if c.startswith("6583"):
+            return "vnc_cedate", "D"
+        if c2 == "65":
+            return "alte_ch_expl", "D"
+        if c3 == "681":
+            return {"6812": "ajust_prov", "6814": "ajust_ac_ch"}.get(c, "amortizare"), "D"
+        if c3 == "686":
+            return "ajust_fin_ch", "D"
+        if c3 == "666":
+            return "dobanzi", "D"
+        if c2 == "66":
+            return "alte_ch_fin", "D"
+        if c2 == "67":
+            return "ch_extra", "D"
+        if c2 == "69":
+            return "impozit_profit", "D"
+        return "alte_ch_expl", "D?"
+    return "", ""
+
+
+def _flow_accounts(bal: BalantaData) -> List[str]:
+    """Conturile de clasa 6/7 la nivelul la care se face încadrarea (cu divizarea pe analitice unde contează)."""
+    out: List[str] = []
+    for syn in bal.synthetic_accounts():
+        if syn[0] not in "67":
+            continue
+        kids = bal.children(syn) if syn in SPLIT_PARENTS else []
+        if kids:
+            ok = all(
+                abs(sum(bal.flow_d(k, p) for k in kids) - bal.flow_d(syn, p)) < TOL
+                and abs(sum(bal.flow_c(k, p) for k in kids) - bal.flow_c(syn, p)) < TOL
+                for p in (1, 2)
+            )
+            if ok:
+                out.extend(kids)
+                continue
+        out.append(syn)
+    return out
+
+
+def compute_cpp_items(bal: BalantaData) -> Tuple[Dict[str, Tuple[float, float, float]], List[str]]:
+    """Rulajele cumulate pe elementele de venituri și cheltuieli (P0 = n.d.) și observațiile de încadrare."""
+    items: Dict[str, List[float]] = {k: [ND, 0.0, 0.0] for k in ITEM_KEYS}
+    notes: List[str] = []
+    for code in _flow_accounts(bal):
+        key, nat = _cpp_key(code)
+        if not key or nat == "X":
+            continue
+        if nat.endswith("?"):
+            notes.append(f"contul {code} a fost inclus la {'alte venituri' if code[0] == '7' else 'alte cheltuieli'} de exploatare")
+            nat = nat[0]
+        for p in (1, 2):
+            items[key][p] += bal.flow_c(code, p) if nat == "C" else bal.flow_d(code, p)
+
+    # Variația stocurilor de produse = sold(perioadă) - sold(01.01) pentru conturile de produse.
+    for p in (1, 2):
+        items["var_stoc"][p] = sum(bal.net_d(c, p) - bal.net_d(c, 0) for c in PRODUSE_STOC)
+
+    return {k: (v[0], round(v[1], 2), round(v[2], 2)) for k, v in items.items()}, notes
+
+
+def _assemble(it: Dict[str, Tuple[float, float, float]]) -> Dict[int, List[float]]:
+    r: Dict[int, List[float]] = {k: [ND, 0.0, 0.0] for k in range(1, 69)}
+    for p in (1, 2):
+        g = lambda k: it[k][p]  # noqa: E731
+        r[2][p] = g("prod_vanduta")
+        r[3][p] = g("venit_marfuri")
+        r[4][p] = g("reduceri_acordate")
+        r[5][p] = 0.0
+        r[6][p] = g("subv_ca")
+        r[1][p] = r[2][p] + r[3][p] - r[4][p] + r[5][p] + r[6][p]
+        vs = g("var_stoc")
+        r[7][p], r[8][p] = (vs, 0.0) if vs >= 0 else (0.0, -vs)
+        r[9][p] = g("prod_imob")
+        r[10][p] = g("alte_ven_expl") + g("ven_cedare") + g("ven_subv_inv") + g("ven_fc_neg")
+        r[11][p] = g("subv_expl")
+        r[12][p] = r[1][p] + r[7][p] - r[8][p] + r[9][p] + r[10][p] + r[11][p]
+
+        r[13][p] = g("mat_prime")
+        r[14][p] = g("alte_mat")
+        r[15][p] = g("energie")
+        r[16][p] = g("marfuri")
+        r[17][p] = g("reduceri_primite")
+        r[19][p] = g("salarii")
+        r[20][p] = g("asigurari")
+        r[18][p] = r[19][p] + r[20][p]
+        r[22][p] = g("amortizare")
+        r[23][p] = g("rel_ajust_imob")
+        r[21][p] = r[22][p] - r[23][p]
+        r[25][p] = g("ajust_ac_ch") + g("pierderi_creante")
+        r[26][p] = g("rel_ajust_ac") + g("creante_reactivate")
+        r[24][p] = r[25][p] - r[26][p]
+        r[28][p] = g("prest_ext")
+        r[29][p] = g("impozite_taxe")
+        r[30][p] = g("alte_ch_expl") + g("vnc_cedate")
+        r[31][p] = 0.0
+        r[27][p] = r[28][p] + r[29][p] + r[30][p] + r[31][p]
+        r[33][p] = g("ajust_prov")
+        r[34][p] = g("rel_prov")
+        r[32][p] = r[33][p] - r[34][p]
+        r[35][p] = (
+            r[13][p] + r[14][p] + r[15][p] + r[16][p] - r[17][p] + r[18][p] + r[21][p] + r[24][p] + r[27][p] + r[32][p]
+        )
+        rex = r[12][p] - r[35][p]
+        r[36][p], r[37][p] = (rex, 0.0) if rex >= 0 else (0.0, -rex)
+
+        r[45][p] = g("ven_fin")
+        r[47][p] = g("ajust_fin_ch")
+        r[48][p] = g("rel_ajust_fin")
+        r[46][p] = r[47][p] - r[48][p]
+        r[49][p] = g("dobanzi")
+        r[51][p] = g("alte_ch_fin")
+        r[52][p] = r[46][p] + r[49][p] + r[51][p]
+        rfin = r[45][p] - r[52][p]
+        r[53][p], r[54][p] = (rfin, 0.0) if rfin >= 0 else (0.0, -rfin)
+        rcur = rex + rfin
+        r[55][p], r[56][p] = (rcur, 0.0) if rcur >= 0 else (0.0, -rcur)
+
+        r[57][p] = g("ven_extra")
+        r[58][p] = g("ch_extra")
+        rext = r[57][p] - r[58][p]
+        r[59][p], r[60][p] = (rext, 0.0) if rext >= 0 else (0.0, -rext)
+
+        r[61][p] = r[12][p] + r[45][p] + r[57][p]
+        r[62][p] = r[35][p] + r[52][p] + r[58][p]
+        rbrut = r[61][p] - r[62][p]
+        r[63][p], r[64][p] = (rbrut, 0.0) if rbrut >= 0 else (0.0, -rbrut)
+        r[65][p] = g("impozit_profit")
+        r[66][p] = 0.0
+        rnet = rbrut - r[65][p] - r[66][p]
+        r[67][p], r[68][p] = (rnet, 0.0) if rnet >= 0 else (0.0, -rnet)
+    for k in r:
+        r[k] = [r[k][0], round(r[k][1], 2), round(r[k][2], 2)]
+    return r
+
+
+def compute_net_result(bal: BalantaData) -> Tuple[float, float, float]:
+    """Rezultatul net al exercițiului curent (P0 = n.d.), folosit și de Bilanț pentru reconciliere."""
+    items, _ = compute_cpp_items(bal)
+    r = _assemble(items)
+    return (ND, round(r[67][1] - r[68][1], 2), round(r[67][2] - r[68][2], 2))
 
 
 @dataclass
@@ -43,9 +269,19 @@ class CPPRow:
 class CPPResult:
     rows_by_code: Dict[int, Tuple[float, float, float]] = field(default_factory=dict)
     table_rows: List[CPPRow] = field(default_factory=list)
+    items: Dict[str, Tuple[float, float, float]] = field(default_factory=dict)
+    note: List[str] = field(default_factory=list)
+    rezultat_121: Tuple[float, float, float] = (ND, ND, ND)
 
     def rd(self, code: int) -> Tuple[float, float, float]:
-        return self.rows_by_code.get(code, (0.0, 0.0, 0.0))
+        return self.rows_by_code.get(code, (ND, 0.0, 0.0))
+
+    def it(self, key: str) -> Tuple[float, float, float]:
+        return self.items.get(key, (ND, 0.0, 0.0))
+
+    def _signed(self, pos: int, neg: int) -> Tuple[float, float, float]:
+        a, b = self.rd(pos), self.rd(neg)
+        return tuple(round(a[p] - b[p], 2) for p in range(3))  # type: ignore[return-value]
 
     @property
     def cifra_afaceri(self) -> Tuple[float, float, float]:
@@ -61,9 +297,7 @@ class CPPResult:
 
     @property
     def rezultat_exploatare(self) -> Tuple[float, float, float]:
-        p0, p1, p2 = self.rd(36)
-        l0, l1, l2 = self.rd(37)
-        return (round(p0 - l0, 2), round(p1 - l1, 2), round(p2 - l2, 2))
+        return self._signed(36, 37)
 
     @property
     def venituri_financiare(self) -> Tuple[float, float, float]:
@@ -75,9 +309,7 @@ class CPPResult:
 
     @property
     def rezultat_financiar(self) -> Tuple[float, float, float]:
-        p0, p1, p2 = self.rd(53)
-        l0, l1, l2 = self.rd(54)
-        return (round(p0 - l0, 2), round(p1 - l1, 2), round(p2 - l2, 2))
+        return self._signed(53, 54)
 
     @property
     def venituri_totale(self) -> Tuple[float, float, float]:
@@ -89,9 +321,7 @@ class CPPResult:
 
     @property
     def rezultat_brut(self) -> Tuple[float, float, float]:
-        p0, p1, p2 = self.rd(63)
-        l0, l1, l2 = self.rd(64)
-        return (round(p0 - l0, 2), round(p1 - l1, 2), round(p2 - l2, 2))
+        return self._signed(63, 64)
 
     @property
     def impozit_profit(self) -> Tuple[float, float, float]:
@@ -99,211 +329,84 @@ class CPPResult:
 
     @property
     def rezultat_net(self) -> Tuple[float, float, float]:
-        p0, p1, p2 = self.rd(67)
-        l0, l1, l2 = self.rd(68)
-        return (round(p0 - l0, 2), round(p1 - l1, 2), round(p2 - l2, 2))
+        return self._signed(67, 68)
+
+    @property
+    def dobanzi(self) -> Tuple[float, float, float]:
+        return self.rd(49)
 
 
-def compute_sheet_02_cpp(bal: BalantaData, bilant: BilantResult) -> CPPResult:
-    """Calculează indicatorii Contului de Profit și Pierdere pentru perioadele de raportare 0, 1 și 2."""
+def compute_sheet_02_cpp(bal: BalantaData, bilant=None) -> CPPResult:
+    """Calculează Contul de Profit și Pierdere pentru P1 și P2 (rulaje cumulate); P0 = n.d."""
     res = CPPResult()
-    r: Dict[int, List[float]] = {k: [0.0, 0.0, 0.0] for k in range(1, 69)}
-
-    for p in (0, 1, 2):
-        r[2][p] = round(
-            sum(bal.rulaj_cpp(c, p, True) for c in ("701", "702", "703", "704", "705", "706", "708")), 2
-        )
-        r[3][p] = round(bal.rulaj_cpp("707", p, True), 2)
-        r[4][p] = round(bal.rulaj_cpp("709", p, False), 2)
-        r[5][p] = 0.0
-        r[6][p] = round(bal.rulaj_cpp("7411", p, True), 2)
-        r[1][p] = round(r[2][p] + r[3][p] - r[4][p] + r[5][p] + r[6][p], 2)
-
-        # Variația stocurilor de produse finite și producție în curs (ct. 711 + 712):
-        # când produsele obținute (345 = 711) sunt scăzute din gestiune la vânzare (711 = 345),
-        # variația netă a stocului aferentă perioadei este rulaj_c(711+712) - rulaj_c(345+331).
-        var_711 = round(
-            sum(bal.rulaj_cpp(c, p, True) for c in ("711", "712"))
-            - sum(bal.rulaj_cpp(c, p, True) for c in ("331", "332", "341", "345", "346")),
-            2,
-        )
-        if var_711 >= 0:
-            r[7][p], r[8][p] = var_711, 0.0
-        else:
-            r[7][p], r[8][p] = 0.0, abs(var_711)
-
-        r[9][p] = round(sum(bal.rulaj_cpp(c, p, True) for c in ("721", "722")), 2)
-        r[10][p] = round(bal.rulaj_cpp("758", p, True) + bal.rulaj_cpp("7417", p, True), 2)
-        r[11][p] = 0.0
-        r[12][p] = round(r[1][p] + r[7][p] - r[8][p] + r[9][p] + r[10][p], 2)
-
-        r[13][p] = round(
-            bal.rulaj_cpp("601", p, False) + bal.rulaj_cpp("602", p, False) - bal.rulaj_cpp("7412", p, True), 2
-        )
-        r[14][p] = round(sum(bal.rulaj_cpp(c, p, False) for c in ("603", "604", "606", "608")), 2)
-        r[15][p] = round(bal.rulaj_cpp("605", p, False) - bal.rulaj_cpp("7413", p, True), 2)
-        r[16][p] = round(bal.rulaj_cpp("607", p, False), 2)
-        r[17][p] = round(bal.rulaj_cpp("609", p, True), 2)
-
-        r[19][p] = round(
-            sum(bal.rulaj_cpp(c, p, False) for c in ("641", "642", "643", "644")) - bal.rulaj_cpp("7414", p, True), 2
-        )
-        r[20][p] = round(
-            bal.rulaj_cpp("645", p, False) + bal.rulaj_cpp("646", p, False) - bal.rulaj_cpp("7415", p, True), 2
-        )
-        r[18][p] = round(r[19][p] + r[20][p], 2)
-
-        r[22][p] = round(bal.rulaj_cpp("6811", p, False) + bal.rulaj_cpp("6813", p, False), 2)
-        r[23][p] = round(bal.rulaj_cpp("7813", p, True), 2)
-        r[21][p] = round(r[22][p] - r[23][p], 2)
-
-        r[25][p] = round(bal.rulaj_cpp("654", p, False) + bal.rulaj_cpp("6814", p, False), 2)
-        r[26][p] = round(bal.rulaj_cpp("754", p, True) + bal.rulaj_cpp("7814", p, True), 2)
-        r[24][p] = round(r[25][p] - r[26][p], 2)
-
-        prest_ext = (
-            bal.rulaj_cpp("Grupa 61", p, False)
-            + bal.rulaj_cpp("Grupa 62", p, False)
-            - bal.rulaj_cpp("7416", p, True)
-        )
-        r[28][p] = round(prest_ext, 2)
-        r[29][p] = round(bal.rulaj_cpp("635", p, False), 2)
-        r[30][p] = round(bal.rulaj_cpp("652", p, False) + bal.rulaj_cpp("658", p, False), 2)
-        r[31][p] = 0.0
-        r[27][p] = round(r[28][p] + r[29][p] + r[30][p] + r[31][p], 2)
-
-        r[33][p] = round(bal.rulaj_cpp("6812", p, False), 2)
-        r[34][p] = round(bal.rulaj_cpp("7812", p, True), 2)
-        r[32][p] = round(r[33][p] - r[34][p], 2)
-
-        r[35][p] = round(
-            r[13][p]
-            + r[14][p]
-            + r[15][p]
-            + r[16][p]
-            - r[17][p]
-            + r[18][p]
-            + r[21][p]
-            + r[24][p]
-            + r[27][p]
-            + r[32][p],
-            2,
-        )
-
-        rex = round(r[12][p] - r[35][p], 2)
-        if rex >= 0:
-            r[36][p], r[37][p] = rex, 0.0
-        else:
-            r[36][p], r[37][p] = 0.0, abs(rex)
-
-        r[38][p] = round(bal.rulaj_cpp("761", p, True), 2)
-        r[39][p] = 0.0
-        r[40][p] = round(bal.rulaj_cpp("763", p, True), 2)
-        r[41][p] = 0.0
-        r[42][p] = round(bal.rulaj_cpp("766", p, True), 2)
-        r[43][p] = 0.0
-        r[44][p] = round(
-            sum(bal.rulaj_cpp(c, p, True) for c in ("762", "764", "765", "767", "768")), 2
-        )
-        r[45][p] = round(r[38][p] + r[40][p] + r[42][p] + r[44][p], 2)
-
-        r[47][p] = round(bal.rulaj_cpp("686", p, False), 2)
-        r[48][p] = round(bal.rulaj_cpp("786", p, True), 2)
-        r[46][p] = round(r[47][p] - r[48][p], 2)
-        r[49][p] = round(bal.rulaj_cpp("666", p, False) - bal.rulaj_cpp("7418", p, True), 2)
-        r[50][p] = 0.0
-        r[51][p] = round(
-            sum(bal.rulaj_cpp(c, p, False) for c in ("663", "664", "665", "667", "668")), 2
-        )
-        r[52][p] = round(r[46][p] + r[49][p] + r[51][p], 2)
-
-        rfin = round(r[45][p] - r[52][p], 2)
-        if rfin >= 0:
-            r[53][p], r[54][p] = rfin, 0.0
-        else:
-            r[53][p], r[54][p] = 0.0, abs(rfin)
-
-        rcur = round(rex + rfin, 2)
-        if rcur >= 0:
-            r[55][p], r[56][p] = rcur, 0.0
-        else:
-            r[55][p], r[56][p] = 0.0, abs(rcur)
-
-        r[57][p] = round(bal.rulaj_cpp("771", p, True), 2)
-        r[58][p] = round(bal.rulaj_cpp("671", p, False), 2)
-        rext = round(r[57][p] - r[58][p], 2)
-        if rext >= 0:
-            r[59][p], r[60][p] = rext, 0.0
-        else:
-            r[59][p], r[60][p] = 0.0, abs(rext)
-
-        r[61][p] = round(r[12][p] + r[45][p] + r[57][p], 2)
-        r[62][p] = round(r[35][p] + r[52][p] + r[58][p], 2)
-
-        rbrut = round(r[61][p] - r[62][p], 2)
-        if rbrut >= 0:
-            r[63][p], r[64][p] = rbrut, 0.0
-        else:
-            r[63][p], r[64][p] = 0.0, abs(rbrut)
-
-        r[65][p] = round(bal.rulaj_cpp("691", p, False), 2)
-        r[66][p] = round(bal.rulaj_cpp("698", p, False), 2)
-
-        rnet = round(rbrut - r[65][p] - r[66][p], 2)
-        if p == 0:
-            target_t0 = round(bilant.rd(36)[0] - bilant.rd(37)[0], 2)
-            diff_t0 = round(target_t0 - rnet, 2)
-            if abs(diff_t0) <= 0.05 and abs(diff_t0) > 0:
-                r[10][0] = round(r[10][0] + diff_t0, 2)
-                r[12][0] = round(r[12][0] + diff_t0, 2)
-                r[36][0] = round(r[36][0] + diff_t0, 2)
-                r[55][0] = round(r[55][0] + diff_t0, 2)
-                r[61][0] = round(r[61][0] + diff_t0, 2)
-                r[63][0] = round(r[63][0] + diff_t0, 2)
-                rnet = target_t0
-
-        if rnet >= 0:
-            r[67][p], r[68][p] = rnet, 0.0
-        else:
-            r[67][p], r[68][p] = 0.0, abs(rnet)
-
+    items, notes = compute_cpp_items(bal)
+    res.items = items
+    r = _assemble(items)
     for code, vals in r.items():
         res.rows_by_code[code] = (vals[0], vals[1], vals[2])
 
-    definitions = [
-        ("1.", "Cifra de afaceri netă (rd. 02 + 03 - 04)", 1, True),
-        ("", "  - Producția vândută (ct. 701 + 704 + 708)", 2, False),
+    # Reconcilierea cu soldul contului 121 (+ eventualele conturi 6/7 neînchise)
+    rez_121 = []
+    for p in (0, 1, 2):
+        unclosed = sum(-bal.net_d(c, p) for c in bal.synthetic_accounts() if c[0] in "67")
+        rez_121.append(round(bal.net_c("121", p) + unclosed, 2))
+    res.rezultat_121 = (rez_121[0], rez_121[1], rez_121[2])
+    res.note = notes
+
+    rows_def = [
+        ("1.", "Cifra de afaceri netă (rd. 02 + 03 - 04 + 06)", 1, True),
+        ("", "  - Producția vândută (ct. 701..706 + 708)", 2, False),
         ("", "  - Venituri din vânzarea mărfurilor (ct. 707)", 3, False),
         ("", "  - Reduceri comerciale acordate (ct. 709)", 4, False),
-        ("3.", "Producția realizată pentru scopuri proprii și capitalizată (ct. 722)", 9, False),
-        ("4.", "Alte venituri din exploatare (ct. 758)", 10, False),
+        ("", "  - Subvenții de exploatare aferente cifrei de afaceri (ct. 7411)", 6, False),
+        ("2.", "Variația stocurilor de produse — sold creditor (Δ ct. 331..354)", 7, False),
+        ("", "Variația stocurilor de produse — sold debitor (Δ ct. 331..354)", 8, False),
+        ("3.", "Producția realizată pentru scopuri proprii și capitalizată (ct. 72x)", 9, False),
+        ("4.", "Alte venituri din exploatare (ct. 75x fără 754, 7815)", 10, False),
+        ("", "Venituri din subvenții de exploatare (ct. 741x fără 7411)", 11, False),
         ("", "VENITURI DIN EXPLOATARE — TOTAL", 12, True),
         ("5.", "a) Cheltuieli cu materiile prime și materialele consumabile (ct. 601 + 602)", 13, False),
-        ("", "   Alte cheltuieli materiale și cu utilitățile (ct. 603 + 604 + 605 + 608)", 14, False),
+        ("", "   Alte cheltuieli materiale (ct. 603 + 604 + 606 + 608)", 14, False),
+        ("", "b) Alte cheltuieli externe — energie și apă (ct. 605)", 15, False),
         ("", "c) Cheltuieli privind mărfurile (ct. 607)", 16, False),
         ("", "   Reduceri comerciale primite (ct. 609)", 17, False),
-        ("6.", "Cheltuieli cu personalul — Total (ct. 641 + 642 + 645 + 646)", 18, True),
-        ("7.", "Ajustări de valoare privind imobilizările corporale și necorporale (ct. 6811)", 21, False),
-        ("8.", "Alte cheltuieli de exploatare — Total (ct. 61..62 + ct. 635 + ct. 658)", 27, True),
+        ("6.", "Cheltuieli cu personalul (ct. 641..646)", 18, True),
+        ("7.", "Ajustări de valoare privind imobilizările (ct. 6811 + 6813 - 7813)", 21, False),
+        ("", "Ajustări de valoare privind activele circulante (ct. 654 + 6814 - 754 - 7814)", 24, False),
+        ("8.", "Alte cheltuieli de exploatare (ct. 61x + 62x + 63x + 65x)", 27, True),
+        ("", "  - Prestații externe (ct. 61x + 62x)", 28, False),
+        ("", "  - Impozite, taxe și vărsăminte asimilate (ct. 63x)", 29, False),
+        ("", "  - Alte cheltuieli (ct. 65x fără 654)", 30, False),
+        ("", "Ajustări privind provizioanele (ct. 6812 - 7812)", 32, False),
         ("", "CHELTUIELI DE EXPLOATARE — TOTAL", 35, True),
-        ("", "PROFITUL DIN EXPLOATARE (rd. 12 - rd. 35)", 36, True),
-        ("", "VENITURI FINANCIARE — TOTAL (ct. 765 + 766 + 768)", 45, False),
-        ("", "CHELTUIELI FINANCIARE — TOTAL (ct. 665 + 666)", 52, False),
-        ("", "PIERDEREA FINANCIARĂ (rd. 52 - rd. 45)", 54, False),
-        ("", "VENITURI TOTALE (rd. 12 + rd. 45)", 61, True),
-        ("", "CHELTUIELI TOTALE (rd. 35 + rd. 52)", 62, True),
-        ("", "PROFITUL BRUT AL EXERCIȚIULUI (rd. 61 - rd. 62)", 63, True),
-        ("17.", "Impozitul pe profit (ct. 691)", 65, False),
-        ("", "PROFITUL NET AL EXERCIȚIULUI FINANCIAR (rd. 63 - rd. 65)", 67, True),
+        ("", "PROFITUL DIN EXPLOATARE (rd. 12 - 35)", 36, True),
+        ("", "PIERDEREA DIN EXPLOATARE (rd. 35 - 12)", 37, True),
+        ("", "VENITURI FINANCIARE — TOTAL (ct. 76x)", 45, False),
+        ("", "Ajustări de valoare privind imobilizările financiare (ct. 686 - 786)", 46, False),
+        ("", "Cheltuieli privind dobânzile (ct. 666)", 49, False),
+        ("", "Alte cheltuieli financiare (ct. 663..668 fără 666)", 51, False),
+        ("", "CHELTUIELI FINANCIARE — TOTAL", 52, False),
+        ("", "PROFITUL FINANCIAR (rd. 45 - 52)", 53, False),
+        ("", "PIERDEREA FINANCIARĂ (rd. 52 - 45)", 54, False),
+        ("", "VENITURI TOTALE (rd. 12 + 45)", 61, True),
+        ("", "CHELTUIELI TOTALE (rd. 35 + 52)", 62, True),
+        ("", "PROFITUL BRUT (rd. 61 - 62)", 63, True),
+        ("", "PIERDEREA BRUTĂ (rd. 62 - 61)", 64, True),
+        ("17.", "Impozitul pe profit / venit (ct. 69x)", 65, False),
+        ("", "PROFITUL NET AL PERIOADEI (rd. 63 - 65)", 67, True),
+        ("", "PIERDEREA NETĂ A PERIOADEI", 68, True),
     ]
-
-    for grp, den, code, is_tot in definitions:
+    paired = {36: 37, 37: 36, 53: 54, 54: 53, 63: 64, 64: 63, 67: 68, 68: 67}
+    for grp, den, code, is_tot in rows_def:
         v0, v1, v2 = res.rd(code)
-        if not is_tot and abs(v0) < 1e-6 and abs(v1) < 1e-6 and abs(v2) < 1e-6:
+        zero = abs(v1) < 1e-6 and abs(v2) < 1e-6
+        if zero and code in paired:
+            other = res.rd(paired[code])
+            if abs(other[1]) > 1e-6 or abs(other[2]) > 1e-6:
+                continue  # se afișează doar varianta (profit / pierdere) care are valori
+        if zero and not is_tot:
             continue
-        res.table_rows.append(
-            CPPRow(grupa=grp, denumire=den, rand=f"{code:02d}", v0=v0, v1=v1, v2=v2, is_total=is_tot)
-        )
+        res.table_rows.append(CPPRow(grupa=grp, denumire=den, rand=f"{code:02d}", v0=v0, v1=v1, v2=v2, is_total=is_tot))
 
     return res
 
@@ -312,14 +415,17 @@ def render_sheet_02_cpp(doc: Document, bal: BalantaData, res: CPPResult) -> None
     """Generează secțiunea Contului de Profit și Pierdere în documentul Word."""
     add_heading(doc, "2. Contul de Profit și Pierdere Sintetic (OMFP nr. 1802/2014)", level=1)
 
+    fl = bal.period.flow_labels
+    m2 = max(bal.period.months[2], 1)
+    luna = bal.period.month_name or "Luna curentă"
     headers = [
         "Grupa",
         "Indicatorul de venituri, cheltuieli și rezultate",
         "Rd.",
-        "Perioada de raportare 0 (lei)",
-        "Perioada de raportare 1 (lei)",
-        "Perioada de raportare 2 (lei)",
-        "Δ (P2 - P1) (lei)",
+        f"P1 cumulat {fl[1]}",
+        f"P2 cumulat {fl[2]}",
+        f"Rulaj {luna} (P2 - P1)",
+        "Medie lunară P2",
     ]
     rows_data = []
     total_indices = []
@@ -327,44 +433,60 @@ def render_sheet_02_cpp(doc: Document, bal: BalantaData, res: CPPResult) -> None
         if r.is_total:
             total_indices.append(idx)
         rows_data.append([
-            r.grupa,
-            r.denumire,
-            r.rand,
-            fmt_money(r.v0),
-            fmt_money(r.v1),
-            fmt_money(r.v2),
-            fmt_money(r.v2 - r.v1),
+            r.grupa, r.denumire, r.rand, fmt_money(r.v1), fmt_money(r.v2), fmt_money(r.v2 - r.v1), fmt_money(r.v2 / m2),
         ])
 
     make_table(
         doc,
         headers=headers,
         rows=rows_data,
-        col_widths=[0.9, 6.8, 0.8, 2.3, 2.3, 2.3, 2.4],
+        col_widths=[0.9, 6.8, 0.8, 2.3, 2.3, 2.3, 2.1],
         total_rows=total_indices,
         font_size=7.8,
     )
 
-    ca0, ca1, ca2 = res.cifra_afaceri
-    ve0, ve1, ve2 = res.venituri_exploatare
-    ce0, ce1, ce2 = res.cheltuieli_exploatare
-    re0, re1, re2 = res.rezultat_exploatare
-    rn0, rn1, rn2 = res.rezultat_net
+    rn = res.rezultat_net
+    rec_parts = []
+    for p in (1, 2):
+        dif = res.rezultat_121[p] - rn[p]
+        if abs(dif) <= TOL:
+            rec_parts.append(f"P{p}: rezultatul net din CPP ({fmt_money(rn[p])} lei) este egal cu soldul contului 121")
+        else:
+            rec_parts.append(
+                f"P{p}: rezultatul net din CPP ({fmt_money(rn[p])} lei) diferă de soldul contului 121 "
+                f"({fmt_money(res.rezultat_121[p])} lei) cu {fmt_money(dif)} lei — de regulă rezultatul exercițiului "
+                f"precedent încă nerepartizat sau înregistrări directe în contul 121"
+            )
+    rec_txt = "; ".join(rec_parts) + "."
+    rec_txt += (
+        f" Perioada de raportare 0 reprezintă soldurile de deschidere ale exercițiului {bal.period.year} și nu conține "
+        f"rulaje de venituri și cheltuieli; rezultatul exercițiului precedent (sold 121 la 01.01 = "
+        f"{fmt_money(res.rezultat_121[0])} lei) apare doar în bilanț."
+    )
+    if res.note:
+        rec_txt += " Încadrări generice: " + "; ".join(res.note) + "."
+    add_callout(doc, rec_txt, title="Reconcilierea rezultatului și sfera de cuprindere")
+
+    ca = res.cifra_afaceri
+    ve2 = res.venituri_exploatare[2]
+    ce2 = res.cheltuieli_exploatare[2]
+    re2 = res.rezultat_exploatare[2]
+    rn2 = rn[2]
     prod_vand2 = res.rd(2)[2]
     ven_marf2 = res.rd(3)[2]
     ch_pers2 = res.rd(18)[2]
     ch_ext2 = res.rd(27)[2]
-    ch_mat2 = res.rd(13)[2] + res.rd(14)[2] + res.rd(16)[2]
+    ch_mat2 = res.rd(13)[2] + res.rd(14)[2] + res.rd(15)[2] + res.rd(16)[2] - res.rd(17)[2]
 
-    traj_ca = describe_trajectory((ca0, ca1, ca2), bal, "s02_ca", "cifra de afaceri netă")
-    traj_rn = describe_trajectory((rn0, rn1, rn2), bal, "s02_rn", "rezultatul net al exercițiului")
+    flow_ca = describe_flow(ca, bal, "cifra de afaceri netă")
+    flow_rn = describe_flow(rn, bal, "rezultatul net")
 
-    if ven_marf2 > prod_vand2 * 1.5:
-        profil_ca = f"activitatea având un profil predominant comercial (vânzările de mărfuri de {fmt_money(ven_marf2)} lei generează {fmt_ratio_pct(safe_div(ven_marf2, ca2))} din cifra de afaceri a perioadei de raportare 2)"
-    elif prod_vand2 > ven_marf2 * 1.5:
-        profil_ca = f"activitatea fiind susținută prioritar de producția vândută și prestările de servicii ({fmt_money(prod_vand2)} lei, respectiv {fmt_ratio_pct(safe_div(prod_vand2, ca2))} din cifra de afaceri a perioadei de raportare 2)"
+    if all_ok(ca[2]) and ca[2] > 0 and ven_marf2 > prod_vand2 * 1.5:
+        profil_ca = f"activitatea având un profil predominant comercial (vânzările de mărfuri reprezintă {fmt_ratio_pct(safe_div(ven_marf2, ca[2]))} din cifra de afaceri)"
+    elif all_ok(ca[2]) and ca[2] > 0 and prod_vand2 > ven_marf2 * 1.5:
+        profil_ca = f"activitatea fiind susținută prioritar de producția vândută și prestările de servicii ({fmt_ratio_pct(safe_div(prod_vand2, ca[2]))} din cifra de afaceri)"
     else:
-        profil_ca = f"structura veniturilor combinând echilibrat producția vândută ({fmt_money(prod_vand2)} lei) cu vânzările de mărfuri ({fmt_money(ven_marf2)} lei)"
+        profil_ca = f"structura veniturilor combinând producția vândută ({fmt_money(prod_vand2)} lei) cu vânzările de mărfuri ({fmt_money(ven_marf2)} lei)"
 
     cost_dom = (
         f"cheltuielile materiale și cu mărfurile ({fmt_money(ch_mat2)} lei)"
@@ -372,23 +494,23 @@ def render_sheet_02_cpp(doc: Document, bal: BalantaData, res: CPPResult) -> None
         else (
             f"cheltuielile cu personalul ({fmt_money(ch_pers2)} lei)"
             if ch_pers2 >= ch_ext2
-            else f"serviciile executate de terți și alte cheltuieli de exploatare ({fmt_money(ch_ext2)} lei)"
+            else f"prestațiile externe, impozitele și alte cheltuieli de exploatare ({fmt_money(ch_ext2)} lei)"
         )
     )
 
-    if re2 >= 0 and rn2 >= 0:
+    if re2 >= 0:
         rez_msg = pick_variant(
             bal,
             "s02_rez_poz",
             [
-                f"Veniturile din exploatare ({fmt_money(ve2)} lei în perioada de raportare 2) acoperă integral cheltuielile de exploatare ({fmt_money(ce2)} lei, în cadrul cărora ponderea principală revine la {cost_dom}), degajând un profit operațional de {fmt_money(re2)} lei. După deducerea rezultatului financiar ({fmt_money(res.rezultat_financiar[2])} lei) și a impozitului ({fmt_money(res.rd(65)[2])} lei), {traj_rn} (identic cu soldul contului 121).",
-                f"Raportul venituri/cheltuieli de exploatare în perioada de raportare 2 ({fmt_money(ve2)} lei vs. {fmt_money(ce2)} lei, unde elementul dominant de cost este reprezentat de {cost_dom}) asigură un excedent de exploatare de {fmt_money(re2)} lei; pe ansamblu, {traj_rn}.",
-                f"Operațiunile de exploatare din perioada de raportare 2 generează un rezultat pozitiv de {fmt_money(re2)} lei (venituri de {fmt_money(ve2)} lei față de cheltuieli de {fmt_money(ce2)} lei, dominate de {cost_dom}), iar la nivel final {traj_rn}.",
+                f"Veniturile din exploatare cumulate până la finele perioadei de raportare 2 ({fmt_money(ve2)} lei) acoperă cheltuielile de exploatare ({fmt_money(ce2)} lei, dominate de {cost_dom}), degajând un rezultat din exploatare de {fmt_money(re2)} lei; după rezultatul financiar ({fmt_money(res.rezultat_financiar[2])} lei) și impozitul pe profit ({fmt_money(res.rd(65)[2])} lei), {flow_rn}.",
+                f"Raportul venituri/cheltuieli de exploatare cumulate în perioada de raportare 2 ({fmt_money(ve2)} lei față de {fmt_money(ce2)} lei, elementul dominant de cost fiind {cost_dom}) asigură un rezultat din exploatare de {fmt_money(re2)} lei; pe ansamblu, {flow_rn}.",
             ],
         )
     else:
         rez_msg = (
-            f"În perioada de raportare 2, raportul dintre veniturile de exploatare ({fmt_money(ve2)} lei) și cheltuielile de exploatare ({fmt_money(ce2)} lei, dominate de {cost_dom}) conduce la un rezultat operațional de {fmt_money(re2)} lei, iar {traj_rn}."
+            f"Cheltuielile de exploatare cumulate până la finele perioadei de raportare 2 ({fmt_money(ce2)} lei, dominate de {cost_dom}) "
+            f"depășesc veniturile din exploatare ({fmt_money(ve2)} lei), rezultând o pierdere din exploatare de {fmt_money(-re2)} lei; {flow_rn}."
         )
 
-    add_paragraph(doc, f"Diagnostic al performanței: Pe orizontul analizat, {traj_ca}, {profil_ca}. {rez_msg}")
+    add_paragraph(doc, f"Diagnostic al performanței: {flow_ca[0].upper() + flow_ca[1:]}, {profil_ca}. {rez_msg}")

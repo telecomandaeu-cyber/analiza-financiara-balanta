@@ -27,6 +27,9 @@ from docx.shared import Pt
 from core_balanta import (
     BalantaData,
     add_bullet,
+    add_callout,
+    fmt_pp,
+    is_nd,
     add_heading,
     add_paragraph,
     add_part_banner,
@@ -73,77 +76,24 @@ from sheet_19_indicatori_profitabilitate import (
 from sheet_20_corelatii_pearson_spearman import compute_sheet_20_corelatii, render_sheet_20_corelatii
 
 
-def _render_cover_and_intro(
-    doc: Document,
-    bal: BalantaData,
-    bf,
-    sf,
-    rp,
-    ef,
-    liq,
-    solv,
-    sig,
-    caf,
-    lev,
-    risc,
-    prof,
-) -> None:
-    """Generează antetul executiv, Tabloul de Bord KPI și sinteza balanței de verificare."""
-    banner = doc.add_table(rows=1, cols=1)
-    set_table_full_width(banner)
-    set_table_borders(banner, color="0F2C59")
-    c = banner.cell(0, 0)
-    set_cell_shading(c, "0F2C59")
-    set_cell_margins(c, top=90, bottom=90, start=140, end=140)
-
-    p0 = c.paragraphs[0]
-    p0.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p0.paragraph_format.space_before = Pt(0)
-    p0.paragraph_format.space_after = Pt(2)
-    r_sub_top = p0.add_run("DIAGNOSTIC ECONOMICO-FINANCIAR PATRIMONIAL ȘI DE PERFORMANȚĂ\n")
-    set_run_font(r_sub_top, size=8.0, bold=True, color=(147, 197, 253))
-    r_main = p0.add_run("RAPORT DE ANALIZĂ A POZIȚIEI FINANCIARE ȘI A PERFORMANȚELOR FINANCIARE\n")
-    set_run_font(r_main, size=12.5, bold=True, color=(255, 255, 255))
-    r_comp = p0.add_run(
-        f"{bal.denumire}   |   C.I.F.: {bal.cif}   |   Reg. Com.: {bal.reg_com}   |   Sediul: {bal.adresa}   |   Balanța la {bal.perioada}"
-    )
-    set_run_font(r_comp, size=8.8, bold=True, color=(226, 232, 240))
-
-    tot_r = bal.total_row
-    intro_txt = pick_variant(
-        bal,
-        "intro_opening",
-        [
-            f"Prezentul raport evaluează poziția financiară, echilibrul patrimonial, lichiditatea, solvabilitatea, rentabilitatea și riscul de insolvență ale societății {bal.denumire} (C.I.F. {bal.cif}) pe baza datelor contabile din balanța de verificare încheiată la {bal.perioada}. Analiza dinamică urmărește trei momente succesive: Perioada de raportare 0 (soldurile inițiale SID = SIC = {fmt_money(tot_r.sid if tot_r else 0)} lei), Perioada de raportare 1 (situația patrimonială și rezultatele cumulate la finele lunii precedente) și Perioada de raportare 2 (soldurile finale SFD = SFC = {fmt_money(tot_r.sfd if tot_r else 0)} lei și rulajele cumulate TSD = TSC = {fmt_money(tot_r.tsd if tot_r else 0)} lei).",
-            f"Acest studiu de diagnostic economico-financiar investighează arhitectura patrimonială, dinamica rezultatelor, starea de echilibru și bonitatea bancară a societății {bal.denumire} (C.I.F. {bal.cif}), valorificând informațiile din balanța de verificare la {bal.perioada}. Evaluarea comparativă este structurată pe trei repere temporale: Perioada de raportare 0 (egalitatea soldurilor inițiale SID = SIC = {fmt_money(tot_r.sid if tot_r else 0)} lei), Perioada de raportare 1 (poziția intermediară cumulată) și Perioada de raportare 2 (totalul sumelor TSD = TSC = {fmt_money(tot_r.tsd if tot_r else 0)} lei și soldurile finale SFD = SFC = {fmt_money(tot_r.sfd if tot_r else 0)} lei).",
-            f"Documentul sintetizează analiza multilaterală a poziției financiare și a performanțelor operaționale înregistrate de {bal.denumire} (C.I.F. {bal.cif}), conform balanței de verificare la {bal.perioada}. Traiectoria indicatorilor este urmărită pe parcursul a trei secvențe de raportare: Perioada de raportare 0 (solduri inițiale debitoare și creditoare de {fmt_money(tot_r.sid if tot_r else 0)} lei), Perioada de raportare 1 (nivelul cumulat precedent) și Perioada de raportare 2 (rulaje curente de {fmt_money(tot_r.rld if tot_r else 0)} lei, total sume de {fmt_money(tot_r.tsd if tot_r else 0)} lei și solduri finale de {fmt_money(tot_r.sfd if tot_r else 0)} lei).",
-        ],
-    )
-    add_paragraph(
-        doc,
-        intro_txt,
-        space_before=3.0,
-        space_after=2.5,
-    )
-
-    add_heading(doc, "0.1. Tablou de Bord Executiv — Sinteza Indicatorilor Cheie (Top 12 KPI)", level=2)
-    kpi_headers = [
-        "Indicator Cheie de Performanță și Echilibru (KPI)",
-        "Perioada de raportare 0 (01.01.2026)",
-        "Perioada de raportare 1 (31.08.2026)",
-        "Perioada de raportare 2 (30.09.2026)",
-        "Verdict și Încadrare",
-    ]
-    kpi_align = [
-        WD_ALIGN_PARAGRAPH.LEFT,
-        WD_ALIGN_PARAGRAPH.RIGHT,
-        WD_ALIGN_PARAGRAPH.RIGHT,
-        WD_ALIGN_PARAGRAPH.RIGHT,
-        WD_ALIGN_PARAGRAPH.CENTER,
-    ]
-    g_cp = (sf.cp[2] - sf.cp[0]) / abs(sf.cp[0]) if abs(sf.cp[0]) > 1e-6 else 0.0
-    g_rn = (sig.rezultat_net[2] - sig.rezultat_net[0]) / abs(sig.rezultat_net[0]) if abs(sig.rezultat_net[0]) > 1e-6 else 0.0
-    g_caf = (caf.caf_deductiv[2] - caf.caf_deductiv[0]) / abs(caf.caf_deductiv[0]) if abs(caf.caf_deductiv[0]) > 1e-6 else 0.0
+def build_kpi_rows(bal, bf, sf, rp, ef, liq, solv, sig, caf, lev, risc, prof, bil_ok: bool = True) -> list:
+    """Rândurile Tabloului de Bord KPI (folosite atât în raportul Word, cât și în interfața web)."""
+    cap_soc2 = bf.capital_social[2]
+    if sf.cp[2] <= 0:
+        verdict_cp = "Semnal nefavorabil (activ net negativ)"
+    elif cap_soc2 > 0 and sf.cp[2] < 0.5 * cap_soc2:
+        verdict_cp = "Semnal nefavorabil (activ net < ½ capital subscris, art. 153^24 L. 31/1990)"
+    else:
+        verdict_cp = "Semnal favorabil (activ net ≥ ½ capital subscris)"
+    z2 = risc.z_altman[2]
+    if is_nd(z2):
+        verdict_z = "n.d."
+    elif z2 > 2.90:
+        verdict_z = "Societate solvabilă (Z' > 2,90)"
+    elif z2 >= 1.23:
+        verdict_z = "Zonă de incertitudine (1,23–2,90)"
+    else:
+        verdict_z = "Faliment iminent / risc ridicat (Z' < 1,23)"
 
     kpi_rows = [
         [
@@ -151,14 +101,14 @@ def _render_cover_and_intro(
             fmt_money(bf.total_activ[0]),
             fmt_money(bf.total_activ[1]),
             fmt_money(bf.total_activ[2]),
-            "Corelație optimă",
+            "Da (bilanț echilibrat)" if bil_ok else "Nu (diferențe Activ - Pasiv)",
         ],
         [
             "2. Capitaluri Proprii — Activ Net Contabil (lei)",
             fmt_money(sf.cp[0]),
             fmt_money(sf.cp[1]),
             fmt_money(sf.cp[2]),
-            f"{'EFTL' if sf.cp[2] > 0 else 'Dezechilibru'} ({fmt_ratio_pct(g_cp, plus_sign=True)})",
+            verdict_cp,
         ],
         [
             "3. Rata Stabilității Financiare — RSF (%)",
@@ -200,37 +150,122 @@ def _render_cover_and_intro(
             f"{fmt_ratio_pct(solv.solv_generala[0])} / {fmt_ratio_pct(solv.solv_efectiva[0])}",
             f"{fmt_ratio_pct(solv.solv_generala[1])} / {fmt_ratio_pct(solv.solv_efectiva[1])}",
             f"{fmt_ratio_pct(solv.solv_generala[2])} / {fmt_ratio_pct(solv.solv_efectiva[2])}",
-            "Da (Solvabilitate >150%)" if solv.solv_generala[2] >= 1.5 else "Sub plafonul de 150%",
+            "Da (Solvabilitate ≥ 166%)" if solv.solv_generala[2] >= 1.66 else "Sub pragul de 166%",
         ],
         [
-            "9. Cifra de Afaceri Netă / Profitul Net (lei)",
+            "9. Cifra de Afaceri Netă / Rezultatul Net — cumulat (lei)",
             f"{fmt_money(prof.blocks[0].den_vals[0])} / {fmt_money(sig.rezultat_net[0])}",
             f"{fmt_money(prof.blocks[0].den_vals[1])} / {fmt_money(sig.rezultat_net[1])}",
             f"{fmt_money(prof.blocks[0].den_vals[2])} / {fmt_money(sig.rezultat_net[2])}",
-            f"{'Profitabil' if sig.rezultat_net[2] > 0 else 'Pierdere'} ({fmt_ratio_pct(g_rn, plus_sign=True)})",
+            f"{'Profit' if sig.rezultat_net[2] > 0 else 'Pierdere'} (marja netă {fmt_pct(prof.marja_neta[2])})",
         ],
         [
-            "10. Capacitatea de Autofinanțare — CAF (lei)",
+            "10. Capacitatea de Autofinanțare — CAF cumulată (lei)",
             fmt_money(caf.caf_deductiv[0]),
             fmt_money(caf.caf_deductiv[1]),
             fmt_money(caf.caf_deductiv[2]),
-            f"{'Da' if caf.caf_deductiv[2] > 0 else 'Nu'} ({fmt_ratio_pct(g_caf, plus_sign=True)})",
+            "Da (CAF > 0)" if caf.caf_deductiv[2] > 0 else "Nu (CAF ≤ 0)",
         ],
         [
-            "11. Rentabilități: ROA / ROE / Efect de Levier",
-            f"{fmt_pct(prof.roa[0])} / {fmt_pct(prof.roe[0])} / {fmt_ratio_pct(lev.efect_levier[0], plus_sign=True)}",
-            f"{fmt_pct(prof.roa[1])} / {fmt_pct(prof.roe[1])} / {fmt_ratio_pct(lev.efect_levier[1], plus_sign=True)}",
-            f"{fmt_pct(prof.roa[2])} / {fmt_pct(prof.roe[2])} / {fmt_ratio_pct(lev.efect_levier[2], plus_sign=True)}",
+            "11. ROA / ROE anualizate (%) / Efect de levier (pp)",
+            f"{fmt_pct(prof.roa[0])} / {fmt_pct(prof.roe[0])} / {fmt_pp(lev.efect_levier[0])}",
+            f"{fmt_pct(prof.roa[1])} / {fmt_pct(prof.roe[1])} / {fmt_pp(lev.efect_levier[1])}",
+            f"{fmt_pct(prof.roa[2])} / {fmt_pct(prof.roe[2])} / {fmt_pp(lev.efect_levier[2])}",
             lev.verdict[2],
         ],
         [
-            "12. Scorul Z Altman (Standard / Ajustat fără ct. 472+475)",
-            f"{fmt_num(risc.z_altman[0], 2)} / {fmt_num(risc.z_altman_ajustat[0], 2)}",
-            f"{fmt_num(risc.z_altman[1], 2)} / {fmt_num(risc.z_altman_ajustat[1], 2)}",
-            f"{fmt_num(risc.z_altman[2], 2)} / {fmt_num(risc.z_altman_ajustat[2], 2)}",
-            "Solvabil (Z > 3,00)" if risc.z_altman_ajustat[2] > 3.0 else ("Zonă incertă [1,8-3,0]" if risc.z_altman_ajustat[2] >= 1.8 else "Risc insolvență (<1,8)"),
+            "12. Scorul Altman Z' / Scorul Conan-Holder Z",
+            f"{fmt_num(risc.z_altman[0], 2)} / {fmt_num(risc.z_canon_holder[0], 3)}",
+            f"{fmt_num(risc.z_altman[1], 2)} / {fmt_num(risc.z_canon_holder[1], 3)}",
+            f"{fmt_num(risc.z_altman[2], 2)} / {fmt_num(risc.z_canon_holder[2], 3)}",
+            verdict_z,
         ],
     ]
+    return kpi_rows
+
+
+def _render_cover_and_intro(
+    doc: Document,
+    bal: BalantaData,
+    bf,
+    sf,
+    rp,
+    ef,
+    liq,
+    solv,
+    sig,
+    caf,
+    lev,
+    risc,
+    prof,
+    bil_ok: bool = True,
+) -> None:
+    """Generează antetul executiv, Tabloul de Bord KPI și sinteza balanței de verificare."""
+    banner = doc.add_table(rows=1, cols=1)
+    set_table_full_width(banner)
+    set_table_borders(banner, color="0F2C59")
+    c = banner.cell(0, 0)
+    set_cell_shading(c, "0F2C59")
+    set_cell_margins(c, top=90, bottom=90, start=140, end=140)
+
+    p0 = c.paragraphs[0]
+    p0.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p0.paragraph_format.space_before = Pt(0)
+    p0.paragraph_format.space_after = Pt(2)
+    r_sub_top = p0.add_run("DIAGNOSTIC ECONOMICO-FINANCIAR PATRIMONIAL ȘI DE PERFORMANȚĂ\n")
+    set_run_font(r_sub_top, size=8.0, bold=True, color=(147, 197, 253))
+    r_main = p0.add_run("RAPORT DE ANALIZĂ A POZIȚIEI FINANCIARE ȘI A PERFORMANȚELOR FINANCIARE\n")
+    set_run_font(r_main, size=12.5, bold=True, color=(255, 255, 255))
+    r_comp = p0.add_run(
+        f"{bal.denumire}   |   C.I.F.: {bal.cif}   |   Reg. Com.: {bal.reg_com}   |   Sediul: {bal.adresa}   |   Balanța la {bal.perioada}"
+    )
+    set_run_font(r_comp, size=8.8, bold=True, color=(226, 232, 240))
+
+    tot_r = bal.total_row
+    intro_txt = pick_variant(
+        bal,
+        "intro_opening",
+        [
+            f"Prezentul raport evaluează poziția financiară, echilibrul patrimonial, lichiditatea, solvabilitatea, rentabilitatea și riscul de insolvență ale societății {bal.denumire} (C.I.F. {bal.cif}) pe baza datelor contabile din balanța de verificare încheiată la {bal.perioada}. Analiza dinamică urmărește trei momente succesive: Perioada de raportare 0 (soldurile inițiale SID = SIC = {fmt_money(tot_r.sid if tot_r else 0)} lei), Perioada de raportare 1 (situația patrimonială și rezultatele cumulate la finele lunii precedente) și Perioada de raportare 2 (soldurile finale SFD = SFC = {fmt_money(tot_r.sfd if tot_r else 0)} lei și rulajele cumulate TSD = TSC = {fmt_money(tot_r.tsd if tot_r else 0)} lei).",
+            f"Acest studiu de diagnostic economico-financiar investighează arhitectura patrimonială, dinamica rezultatelor, starea de echilibru și bonitatea bancară a societății {bal.denumire} (C.I.F. {bal.cif}), valorificând informațiile din balanța de verificare la {bal.perioada}. Evaluarea comparativă este structurată pe trei repere temporale: Perioada de raportare 0 (egalitatea soldurilor inițiale SID = SIC = {fmt_money(tot_r.sid if tot_r else 0)} lei), Perioada de raportare 1 (poziția intermediară cumulată) și Perioada de raportare 2 (totalul sumelor TSD = TSC = {fmt_money(tot_r.tsd if tot_r else 0)} lei și soldurile finale SFD = SFC = {fmt_money(tot_r.sfd if tot_r else 0)} lei).",
+            f"Documentul sintetizează analiza multilaterală a poziției financiare și a performanțelor operaționale înregistrate de {bal.denumire} (C.I.F. {bal.cif}), conform balanței de verificare la {bal.perioada}. Traiectoria indicatorilor este urmărită pe parcursul a trei secvențe de raportare: Perioada de raportare 0 (solduri inițiale debitoare și creditoare de {fmt_money(tot_r.sid if tot_r else 0)} lei), Perioada de raportare 1 (nivelul cumulat precedent) și Perioada de raportare 2 (rulaje curente de {fmt_money(tot_r.rld if tot_r else 0)} lei, total sume de {fmt_money(tot_r.tsd if tot_r else 0)} lei și solduri finale de {fmt_money(tot_r.sfd if tot_r else 0)} lei).",
+        ],
+    )
+    add_paragraph(
+        doc,
+        intro_txt,
+        space_before=3.0,
+        space_after=2.5,
+    )
+
+    per = bal.period
+    fl = per.flow_labels
+    nota = (
+        f"Perioada de raportare 0 = soldurile de deschidere la {per.dates[0]} (fără rulaje de venituri și cheltuieli, de aceea "
+        f"indicatorii de flux sunt „n.d.”); Perioada de raportare 1 = soldurile la {per.dates[1]} și rulajele cumulate {fl[1]}; "
+        f"Perioada de raportare 2 = soldurile la {per.dates[2]} și rulajele cumulate {fl[2]}. Rulajele cumulate nu se compară "
+        f"direct între P1 și P2 (acoperă {per.months[1]} și {per.months[2]} luni); se prezintă rulajul lunii curente (P2 - P1), iar "
+        f"ratele care raportează un flux la un sold (ROA, ROE, Re, Rd, vitezele de rotație, scorurile de risc) folosesc valori "
+        f"anualizate ({per.days_in_year} / {per.days[1]} zile pentru P1 și {per.days_in_year} / {per.days[2]} zile pentru P2). "
+        f"Controale efectuate: balanța echilibrată, Activ = Pasiv în fiecare perioadă, rezultatul net din CPP = soldul contului 121, "
+        f"cascada SIG = CPP, CAF deductiv = CAF aditiv, FR (sus) = FR (jos) și TN = FR - NFR."
+    )
+    add_callout(doc, nota, title="Notă metodologică")
+
+    add_heading(doc, "0.1. Tablou de Bord Executiv — Sinteza Indicatorilor Cheie (Top 12 KPI)", level=2)
+    kpi_headers = [
+        "Indicator Cheie de Performanță și Echilibru (KPI)",
+        *bal.period_labels,
+        "Verdict și Încadrare",
+    ]
+    kpi_align = [
+        WD_ALIGN_PARAGRAPH.LEFT,
+        WD_ALIGN_PARAGRAPH.RIGHT,
+        WD_ALIGN_PARAGRAPH.RIGHT,
+        WD_ALIGN_PARAGRAPH.RIGHT,
+        WD_ALIGN_PARAGRAPH.CENTER,
+    ]
+    kpi_rows = build_kpi_rows(bal, bf, sf, rp, ef, liq, solv, sig, caf, lev, risc, prof, bil_ok)
     make_table(
         doc,
         headers=kpi_headers,
@@ -246,8 +281,8 @@ def _render_cover_and_intro(
         "Denumire clasă contabilă",
         "SID (lei)",
         "SIC (lei)",
-        "Rulaj D Sep.",
-        "Rulaj C Sep.",
+        f"Rulaj D {bal.period.month_name[:3]}.",
+        f"Rulaj C {bal.period.month_name[:3]}.",
         "Total Sume D",
         "Total Sume C",
         "SFD (lei)",
@@ -336,7 +371,7 @@ def _render_executive_conclusions(
         bal,
         "exec_b1",
         [
-            f"Pe ansamblul celor trei perioade de raportare, {traj_cp_exec}, acoperind activele imobilizate nete ({fmt_money(bf.active_imobilizate[2])} lei în perioada de raportare 2) în proporție de {fmt_ratio_pct(acop_imob)} și generând în perioada de raportare 2 un Fond de Rulment Patrimonial de {fmt_money(ef.fr_sus[2])} lei, un Fond de Rulment Propriu de {fmt_money(ef.frp[2])} lei și o Trezorerie Netă de {fmt_money(ef.tn[2])} lei.",
+            f"{traj_cp_exec[0].upper() + traj_cp_exec[1:]}, acoperind activele imobilizate nete ({fmt_money(bf.active_imobilizate[2])} lei în perioada de raportare 2) în proporție de {fmt_ratio_pct(acop_imob)} și generând în perioada de raportare 2 un Fond de Rulment Patrimonial de {fmt_money(ef.fr_sus[2])} lei, un Fond de Rulment Propriu de {fmt_money(ef.frp[2])} lei și o Trezorerie Netă de {fmt_money(ef.tn[2])} lei.",
             f"Arhitectura financiară a societății este marcată de faptul că {traj_cp_exec}; la finele perioadei de raportare 2, resursele proprii finanțează în proporție de {fmt_ratio_pct(acop_imob)} imobilizările nete ({fmt_money(bf.active_imobilizate[2])} lei), susținând un Fond de Rulment de {fmt_money(ef.fr_sus[2])} lei (FRP = {fmt_money(ef.frp[2])} lei) și o Trezorerie Netă de {fmt_money(ef.tn[2])} lei.",
         ],
     )
@@ -345,8 +380,8 @@ def _render_executive_conclusions(
         bal,
         "exec_b2",
         [
-            f"În perioada de raportare 2, treptele de lichiditate — curentă ({fmt_ratio_pct(liq.l_curenta[2])}), rapidă ({fmt_ratio_pct(liq.l_rapida[2])}) și imediată ({fmt_ratio_pct(liq.l_imediata[2])}) — atestă gradul de acoperire a datoriilor pe termen scurt ({fmt_money(bf.datorii_termen_scurt[2])} lei) din activele circulante și din disponibilitățile bănești ({fmt_money(bf.disponibilitati[2])} lei). Solvabilitatea Generală se situează la {fmt_ratio_pct(solv.solv_generala[2])}, iar raportul dintre rentabilitatea capitalurilor (Re = {fmt_ratio_pct(lev.re_rate[2])}) și costul dobânzii bancare (Rd = {fmt_ratio_pct(lev.rd_rate[2])}) conduce la un efect financiar de {fmt_ratio_pct(lev.efect_levier[2], plus_sign=True)} ({lev.verdict[2]}).",
-            f"Capacitatea de plată în perioada de raportare 2 este caracterizată de o lichiditate curentă de {fmt_ratio_pct(liq.l_curenta[2])}, o lichiditate rapidă de {fmt_ratio_pct(liq.l_rapida[2])} și o lichiditate imediată de {fmt_ratio_pct(liq.l_imediata[2])} (lichiditate imediată efectivă de {fmt_ratio_pct(liq.l_imediata_exig[2])}), dublată de o Solvabilitate Generală de {fmt_ratio_pct(solv.solv_generala[2])} și un efect de îndatorare de {fmt_ratio_pct(lev.efect_levier[2], plus_sign=True)} ({lev.verdict[2]}).",
+            f"În perioada de raportare 2, treptele de lichiditate — curentă ({fmt_ratio_pct(liq.l_curenta[2])}), rapidă ({fmt_ratio_pct(liq.l_rapida[2])}) și imediată ({fmt_ratio_pct(liq.l_imediata[2])}) — atestă gradul de acoperire a datoriilor pe termen scurt ({fmt_money(bf.datorii_termen_scurt[2])} lei) din activele circulante și din disponibilitățile bănești ({fmt_money(bf.disponibilitati[2])} lei). Solvabilitatea generală se situează la {fmt_ratio_pct(solv.solv_generala[2])}, iar raportul dintre rentabilitatea economică anualizată (Re = {fmt_ratio_pct(lev.re_rate[2])}) și costul mediu al îndatorării (Rd = {fmt_ratio_pct(lev.rd_rate[2])}) conduce la un efect de levier de {fmt_pp(lev.efect_levier[2])} ({lev.verdict[2]}).",
+            f"Capacitatea de plată în perioada de raportare 2 este caracterizată de o lichiditate curentă de {fmt_ratio_pct(liq.l_curenta[2])}, o lichiditate rapidă de {fmt_ratio_pct(liq.l_rapida[2])} și o lichiditate imediată de {fmt_ratio_pct(liq.l_imediata[2])} (lichiditate imediată pe datoriile exigibile de {fmt_ratio_pct(liq.l_imediata_exig[2])}), dublată de o solvabilitate generală de {fmt_ratio_pct(solv.solv_generala[2])} și un efect de levier de {fmt_pp(lev.efect_levier[2])} ({lev.verdict[2]}).",
         ],
     )
 
@@ -354,15 +389,16 @@ def _render_executive_conclusions(
         bal,
         "exec_b3",
         [
-            f"La finele perioadei de raportare 2, activitatea operațională degajă o Cifră de Afaceri Netă de {fmt_money(prof.blocks[0].den_vals[2])} lei, o Valoare Adăugată de {fmt_money(sig.valoarea_adaugata[2])} lei, un Rezultat al Exploatării de {fmt_money(sig.rezultat_exploatare[2])} lei și un Profit Net de {fmt_money(sig.rezultat_net[2])} lei (ROA = {fmt_pct(prof.roa[2])}, ROE = {fmt_pct(prof.roe[2])}, ROS = {fmt_pct(prof.ros[2])}), generând o Capacitate de Autofinanțare de {fmt_money(caf.caf_deductiv[2])} lei și un Scor Z Altman de {fmt_num(risc.z_altman[2], 4)} (ajustat {fmt_num(risc.z_altman_ajustat[2], 4)} — {risc.interp_altman[2]}).",
-            f"Performanța acumulată în perioada de raportare 2 se concretizează într-o Cifră de Afaceri Netă de {fmt_money(prof.blocks[0].den_vals[2])} lei, un Excedent Brut de Exploatare (EBE) de {fmt_money(sig.ebe[2])} lei, un Profit Net de {fmt_money(sig.rezultat_net[2])} lei și o Capacitate de Autofinanțare (CAF deductiv = CAF aditiv) de {fmt_money(caf.caf_deductiv[2])} lei, în condițiile unor rate de rentabilitate ROA = {fmt_pct(prof.roa[2])}, ROE = {fmt_pct(prof.roe[2])} și ROS = {fmt_pct(prof.ros[2])} și ale unui Scor Altman ajustat de {fmt_num(risc.z_altman_ajustat[2], 4)}.",
+            f"Până la finele perioadei de raportare 2 ({bal.period.months[2]} luni cumulate), activitatea operațională degajă o cifră de afaceri netă de {fmt_money(prof.blocks[0].den_vals[2])} lei, o valoare adăugată de {fmt_money(sig.valoarea_adaugata[2])} lei, un rezultat al exploatării de {fmt_money(sig.rezultat_exploatare[2])} lei și un rezultat net de {fmt_money(sig.rezultat_net[2])} lei (ROA anualizat = {fmt_pct(prof.roa[2])}, ROE anualizat = {fmt_pct(prof.roe[2])}, marja operațională = {fmt_pct(prof.ros[2])}), generând o capacitate de autofinanțare de {fmt_money(caf.caf_deductiv[2])} lei; scorul Altman Z' este {fmt_num(risc.z_altman[2], 4)} ({risc.interp_altman[2]}).",
+            f"Performanța cumulată în perioada de raportare 2 ({bal.period.months[2]} luni) se concretizează într-o cifră de afaceri netă de {fmt_money(prof.blocks[0].den_vals[2])} lei, un excedent brut de exploatare (EBE) de {fmt_money(sig.ebe[2])} lei, un rezultat net de {fmt_money(sig.rezultat_net[2])} lei și o capacitate de autofinanțare de {fmt_money(caf.caf_deductiv[2])} lei, în condițiile unor rate anualizate ROA = {fmt_pct(prof.roa[2])} și ROE = {fmt_pct(prof.roe[2])}, ale unei marje operaționale de {fmt_pct(prof.ros[2])} și ale unui scor Altman Z' de {fmt_num(risc.z_altman[2], 4)}.",
         ],
     )
 
-    if ef.tn[2] > 0 and lev.credit[2] > 0:
-        b4_txt = f"Având în vedere Trezoreria Netă pozitivă ({fmt_money(ef.tn[2])} lei) și disponibilitățile bănești de {fmt_money(bf.disponibilitati[2])} lei din perioada de raportare 2, se recomandă plasarea excedentului monetar în instrumente purtătoare de dobândă sau rambursarea anticipată parțială a creditului pe termen lung în sold ({fmt_money(lev.credit[2])} lei), concomitent cu menținerea duratei de încasare a clienților ({fmt_num(gest.dur_clienti_411[2], 1)} zile) sub durata de plată a furnizorilor ({fmt_num(gest.dur_furnizori_401[2], 1)} zile)."
+    df2 = bf.datorii_financiare[2]
+    if ef.tn[2] > 0 and df2 > 0:
+        b4_txt = f"Având în vedere trezoreria netă pozitivă ({fmt_money(ef.tn[2])} lei) din perioada de raportare 2, se recomandă utilizarea excedentului monetar pentru reducerea datoriilor financiare purtătoare de dobândă ({fmt_money(df2)} lei, cu un cost mediu anualizat Rd = {fmt_ratio_pct(lev.rd_rate[2])}) sau plasarea lui în instrumente cu randament superior acestui cost, concomitent cu monitorizarea decalajului dintre durata de încasare a clienților ({fmt_num(gest.dur_clienti_411[2], 1)} zile) și durata de plată a furnizorilor ({fmt_num(gest.dur_furnizori_401[2], 1)} zile)."
     elif ef.tn[2] > 0:
-        b4_txt = f"În contextul unei Trezorerii Nete excedentare ({fmt_money(ef.tn[2])} lei în perioada de raportare 2, după acoperirea integrală a NFR de {fmt_money(ef.nfr[2])} lei din Fondul de Rulment de {fmt_money(ef.fr_sus[2])} lei) și a absenței creditelor bancare pe termen lung, se recomandă fructificarea plasamentelor de trezorerie ({fmt_money(bf.disponibilitati[2])} lei) și optimizarea rotației stocurilor ({fmt_num(gest.dur_stoc[2], 1)} zile) și creanțelor ({fmt_num(gest.dur_clienti_411[2], 1)} zile)."
+        b4_txt = f"În contextul unei trezorerii nete excedentare ({fmt_money(ef.tn[2])} lei în perioada de raportare 2) și al absenței datoriilor financiare purtătoare de dobândă, se recomandă fructificarea disponibilităților ({fmt_money(bf.disponibilitati[2])} lei) și optimizarea rotației stocurilor ({fmt_num(gest.dur_stoc[2], 1)} zile) și a încasării clienților ({fmt_num(gest.dur_clienti_411[2], 1)} zile)."
     else:
         b4_txt = f"Pentru consolidarea Trezoreriei Nete ({fmt_money(ef.tn[2])} lei în perioada de raportare 2), se recomandă reducerea Necesarului de Fond de Rulment ({fmt_money(ef.nfr[2])} lei) prin accelerarea încasării creanțelor ({fmt_num(gest.dur_creante[2], 1)} zile), dimensionarea strictă a stocurilor ({fmt_num(gest.dur_stoc[2], 1)} zile) și renegocierea termenelor de plată cu furnizorii ({fmt_num(gest.dur_furnizori_401[2], 1)} zile)."
 
@@ -370,6 +406,37 @@ def _render_executive_conclusions(
     add_bullet(doc, "2. Lichiditate, solvabilitate și capacitate de îndatorare bancară", b2_txt)
     add_bullet(doc, "3. Performanță operațională, autofinanțare și risc de insolvență", b3_txt)
     add_bullet(doc, "4. Recomandări manageriale adaptate profilului financiar", b4_txt)
+
+
+def compute_all(bal: BalantaData) -> dict:
+    """Rulează cele 20 de module de calcul în ordinea dependențelor și întoarce rezultatele."""
+    per = bal.period
+    af = (per.annual_factor(0), per.annual_factor(1), per.annual_factor(2))
+    s01 = compute_sheet_01_bilant(bal)
+    s02 = compute_sheet_02_cpp(bal, s01)
+    s03 = compute_sheet_03_bilant_financiar(s01)
+    s04 = compute_sheet_04_ratele_activului(s03, s02, per.months)
+    s05 = compute_sheet_05_structura_financiara(s03)
+    s06 = compute_sheet_06_ratele_pasivului(s05)
+    s07 = compute_sheet_07_echilibrul_financiar(s03, s05)
+    s08 = compute_sheet_08_lichiditatea(s03, s01)
+    s09 = compute_sheet_09_solvabilitatea(s03, s05, s01)
+    s10 = compute_sheet_10_bilant_simplificat(s03, s07)
+    s11 = compute_sheet_11_echilibru_static(s07)
+    s12 = compute_sheet_12_echilibru_dinamic(s11)
+    s13 = compute_sheet_13_sig(s02)
+    s14 = compute_sheet_14_caf(s02, s13)
+    s15 = compute_sheet_15_capacitatea_indatorare(s01, s03, s05)
+    s16 = compute_sheet_16_efectul_indatorare(s03, s05, s02, af)
+    s17 = compute_sheet_17_riscul_faliment(s01, s02, s03, s05, s07, s13, af)
+    s18 = compute_sheet_18_indicatori_gestiune(bal, s03, s02)
+    s19 = compute_sheet_19_indicatori_profitabilitate(s03, s02, af)
+    s20 = compute_sheet_20_corelatii(s01, s02, s03, s05, s07, s08, s09, s13, s17)
+    return {
+        "s01": s01, "s02": s02, "s03": s03, "s04": s04, "s05": s05, "s06": s06, "s07": s07,
+        "s08": s08, "s09": s09, "s10": s10, "s11": s11, "s12": s12, "s13": s13, "s14": s14,
+        "s15": s15, "s16": s16, "s17": s17, "s18": s18, "s19": s19, "s20": s20,
+    }
 
 
 def generate_full_financial_report(
@@ -383,35 +450,20 @@ def generate_full_financial_report(
     bal = parse_balanta_pdf(pdf_path)
 
     # ETAPA 1: EXECUȚIA CELOR 20 DE MODULE INTERCONECTATE
-    s01_bilant = compute_sheet_01_bilant(bal)
-    s02_cpp = compute_sheet_02_cpp(bal, s01_bilant)
-    s03_bf = compute_sheet_03_bilant_financiar(s01_bilant)
-    s04_ra = compute_sheet_04_ratele_activului(s03_bf, s02_cpp)
-    s05_sf = compute_sheet_05_structura_financiara(s03_bf)
-    s06_rp = compute_sheet_06_ratele_pasivului(s05_sf)
-    s07_ef = compute_sheet_07_echilibrul_financiar(s03_bf, s05_sf)
-    s08_liq = compute_sheet_08_lichiditatea(s03_bf, s01_bilant)
-    s09_solv = compute_sheet_09_solvabilitatea(s03_bf, s05_sf, s01_bilant)
-    s10_bs = compute_sheet_10_bilant_simplificat(s03_bf, s07_ef)
-    s11_es = compute_sheet_11_echilibru_static(s07_ef)
-    s12_ed = compute_sheet_12_echilibru_dinamic(s11_es)
-    s13_sig = compute_sheet_13_sig(s02_cpp)
-    s14_caf = compute_sheet_14_caf(s02_cpp, s13_sig)
-    s15_cap = compute_sheet_15_capacitatea_indatorare(s01_bilant, s03_bf, s05_sf)
-    s16_lev = compute_sheet_16_efectul_indatorare(s03_bf, s05_sf, s02_cpp)
-    s17_risc = compute_sheet_17_riscul_faliment(s01_bilant, s02_cpp, s03_bf, s05_sf, s07_ef, s13_sig)
-    s18_gest = compute_sheet_18_indicatori_gestiune(bal, s03_bf, s02_cpp)
-    s19_prof = compute_sheet_19_indicatori_profitabilitate(s03_bf, s02_cpp)
-    s20_corr = compute_sheet_20_corelatii(
-        s01_bilant, s02_cpp, s03_bf, s05_sf, s07_ef, s08_liq, s09_solv, s13_sig, s17_risc
-    )
+    r = compute_all(bal)
+    s01_bilant, s02_cpp, s03_bf, s04_ra = r["s01"], r["s02"], r["s03"], r["s04"]
+    s05_sf, s06_rp, s07_ef, s08_liq = r["s05"], r["s06"], r["s07"], r["s08"]
+    s09_solv, s10_bs, s11_es, s12_ed = r["s09"], r["s10"], r["s11"], r["s12"]
+    s13_sig, s14_caf, s15_cap, s16_lev = r["s13"], r["s14"], r["s15"], r["s16"]
+    s17_risc, s18_gest, s19_prof, s20_corr = r["s17"], r["s18"], r["s19"], r["s20"]
 
     # ETAPA 2: CONSTRUIREA DOCUMENTULUI WORD (.DOCX) COMPACT ȘI SINTETIC
     doc = Document()
     configure_document(doc, bal)
 
     _render_cover_and_intro(
-        doc, bal, s03_bf, s05_sf, s06_rp, s07_ef, s08_liq, s09_solv, s13_sig, s14_caf, s16_lev, s17_risc, s19_prof
+        doc, bal, s03_bf, s05_sf, s06_rp, s07_ef, s08_liq, s09_solv, s13_sig, s14_caf, s16_lev, s17_risc, s19_prof,
+        bil_ok=s01_bilant.echilibrat,
     )
 
     add_part_banner(
@@ -491,7 +543,7 @@ def generate_full_financial_report(
         out_dir = utilitare_dir / "output_analiza_financiara"
         out_dir.mkdir(parents=True, exist_ok=True)
         clean_name = "".join(ch if ch.isalnum() else "_" for ch in bal.denumire).strip("_")
-        output_docx_path = out_dir / f"Raport_Analiza_Financiara_{clean_name}_Balanta_2026.docx"
+        output_docx_path = out_dir / f"Raport_Analiza_Financiara_{clean_name}_Balanta_{bal.period.year}.docx"
 
     out_path = Path(output_docx_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

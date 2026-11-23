@@ -2,8 +2,20 @@
 # -*- coding: utf-8 -*-
 """
 Capitolul 14: Capacitatea de Autofinanțare (CAF — Metoda Deductivă și Metoda Aditivă).
-Calculează potențialul financiar intern degajat de activitatea curentă prin ambele metode
-consacrate (Metoda Deductivă pornind de la EBE și Metoda Aditivă pornind de la Rezultatul Net).
+
+Metoda deductivă (pornind de la EBE):
+  CAF = EBE + alte venituri de exploatare încasabile - alte cheltuieli de exploatare plătibile
+        + venituri financiare încasabile - cheltuieli financiare plătibile
+        ± rezultat extraordinar - impozitul pe profit
+  (se exclud veniturile din cedarea activelor 7583, subvențiile pentru investiții reluate 7584,
+   fondul comercial negativ 7815 și valoarea contabilă a activelor cedate 6583)
+
+Metoda aditivă (pornind de la rezultatul net):
+  CAF = RN + cheltuieli calculate (681x fără 654, 686) - venituri calculate (781x, 786)
+        + VNC active cedate (6583) - venituri din cedări (7583) - 7584 - 7815
+
+Cele două metode trebuie să conducă la aceeași valoare; diferența este verificată și raportată.
+Indicatorii sunt rulaje cumulate (P1, P2); P0 nu conține rulaje (n.d.).
 """
 
 from __future__ import annotations
@@ -21,20 +33,22 @@ from core_balanta import (
     calc_growth_rate,
     calc_index,
     calc_ritm_mediu,
-    describe_trajectory,
+    describe_flow,
     fmt_money,
-    fmt_ratio_pct,
     make_table,
-    pick_variant,
+    safe_div,
+    fmt_ratio_pct,
 )
 from sheet_02_cpp import CPPResult
 from sheet_13_sig import SIGResult
 
+Triple = Tuple[float, float, float]
+
 
 @dataclass
 class CAFResult:
-    caf_deductiv: Tuple[float, float, float]
-    caf_aditiv: Tuple[float, float, float]
+    caf_deductiv: Triple
+    caf_aditiv: Triple
     delta_ded: Tuple[float, float]
     delta_ad: Tuple[float, float]
     index_ded: Tuple[Optional[float], Optional[float]]
@@ -43,123 +57,120 @@ class CAFResult:
     growth_ad: Tuple[Optional[float], Optional[float]]
     ritm_ded: Optional[float]
     ritm_ad: Optional[float]
+    componente_ded: Tuple[Tuple[str, Triple], ...] = ()
+    componente_ad: Tuple[Tuple[str, Triple], ...] = ()
+
+    @property
+    def diferenta(self) -> Triple:
+        return tuple(round(self.caf_deductiv[p] - self.caf_aditiv[p], 2) for p in range(3))  # type: ignore[return-value]
+
+
+def _t(fn) -> Triple:
+    return tuple(round(fn(p), 2) for p in range(3))  # type: ignore[return-value]
 
 
 def compute_sheet_14_caf(cpp: CPPResult, sig: SIGResult) -> CAFResult:
-    """Calculează CAF deductiv și CAF aditiv pe cele trei perioade de raportare."""
-    caf_ded = []
-    caf_ad = []
-    for p in range(3):
-        ebe_p = sig.ebe[p]
-        alte_v_expl = cpp.rd(10)[p]
-        alte_c_expl = cpp.rd(30)[p] + cpp.rd(31)[p]
-        v_fin_mon = cpp.rd(45)[p] - cpp.rd(48)[p]
-        c_fin_mon = cpp.rd(52)[p] - cpp.rd(47)[p]
-        v_ext = cpp.rd(57)[p]
-        c_ext = cpp.rd(58)[p]
-        imp = cpp.rd(65)[p] + cpp.rd(66)[p]
+    """Calculează CAF deductiv și CAF aditiv pentru P1 și P2 (P0 = n.d.)."""
+    g = lambda k, p: cpp.it(k)[p]  # noqa: E731
 
-        val_ded = round(
-            ebe_p + alte_v_expl - alte_c_expl + v_fin_mon - c_fin_mon + v_ext - c_ext - imp, 2
-        )
+    ebe = sig.ebe
+    alte_ven_inc = _t(lambda p: g("alte_ven_expl", p) + g("creante_reactivate", p))
+    alte_ch_plat = _t(lambda p: g("alte_ch_expl", p) + g("pierderi_creante", p))
+    ven_fin_inc = _t(lambda p: g("ven_fin", p))
+    ch_fin_plat = _t(lambda p: g("dobanzi", p) + g("alte_ch_fin", p))
+    rez_extra = _t(lambda p: g("ven_extra", p) - g("ch_extra", p))
+    imp = cpp.impozit_profit
+    ded = _t(lambda p: ebe[p] + alte_ven_inc[p] - alte_ch_plat[p] + ven_fin_inc[p] - ch_fin_plat[p] + rez_extra[p] - imp[p])
 
-        r_net = sig.rezultat_net[p]
-        amort_prov_calc = cpp.rd(22)[p] + cpp.rd(25)[p] + cpp.rd(33)[p] + cpp.rd(47)[p]
-        reluari_ven = cpp.rd(23)[p] + cpp.rd(26)[p] + cpp.rd(34)[p] + cpp.rd(48)[p]
-        val_ad = round(r_net + amort_prov_calc - reluari_ven, 2)
-
-        caf_ded.append(val_ded)
-        caf_ad.append(val_ad)
-
-    t_ded = (caf_ded[0], caf_ded[1], caf_ded[2])
-    t_ad = (caf_ad[0], caf_ad[1], caf_ad[2])
+    rn = cpp.rezultat_net
+    ch_calc = _t(lambda p: g("amortizare", p) + g("ajust_ac_ch", p) + g("ajust_prov", p) + g("ajust_fin_ch", p))
+    ven_calc = _t(lambda p: g("rel_ajust_imob", p) + g("rel_ajust_ac", p) + g("rel_prov", p) + g("rel_ajust_fin", p))
+    cedari = _t(lambda p: g("vnc_cedate", p) - g("ven_cedare", p) - g("ven_subv_inv", p) - g("ven_fc_neg", p))
+    ad = _t(lambda p: rn[p] + ch_calc[p] - ven_calc[p] + cedari[p])
 
     return CAFResult(
-        caf_deductiv=t_ded,
-        caf_aditiv=t_ad,
-        delta_ded=calc_delta(t_ded),
-        delta_ad=calc_delta(t_ad),
-        index_ded=calc_index(t_ded),
-        index_ad=calc_index(t_ad),
-        growth_ded=calc_growth_rate(t_ded),
-        growth_ad=calc_growth_rate(t_ad),
-        ritm_ded=calc_ritm_mediu(t_ded),
-        ritm_ad=calc_ritm_mediu(t_ad),
+        caf_deductiv=ded,
+        caf_aditiv=ad,
+        delta_ded=calc_delta(ded),
+        delta_ad=calc_delta(ad),
+        index_ded=calc_index(ded),
+        index_ad=calc_index(ad),
+        growth_ded=calc_growth_rate(ded),
+        growth_ad=calc_growth_rate(ad),
+        ritm_ded=calc_ritm_mediu(ded),
+        ritm_ad=calc_ritm_mediu(ad),
+        componente_ded=(
+            ("Excedentul brut de exploatare (EBE)", ebe),
+            ("+ Alte venituri de exploatare încasabile (ct. 75x fără 7583, 7584; 754)", alte_ven_inc),
+            ("- Alte cheltuieli de exploatare plătibile (ct. 65x fără 6583; 654)", alte_ch_plat),
+            ("+ Venituri financiare încasabile (ct. 76x)", ven_fin_inc),
+            ("- Cheltuieli financiare plătibile (ct. 66x)", ch_fin_plat),
+            ("± Rezultatul extraordinar (ct. 77x - 67x)", rez_extra),
+            ("- Impozitul pe profit / venit (ct. 69x)", imp),
+        ),
+        componente_ad=(
+            ("Rezultatul net al perioadei", rn),
+            ("+ Cheltuieli calculate: amortizări, ajustări, provizioane (ct. 681x, 686x)", ch_calc),
+            ("- Venituri calculate: reluări de ajustări și provizioane (ct. 781x, 786x)", ven_calc),
+            ("± Efectul cedărilor de active (ct. 6583 - 7583 - 7584 - 7815)", cedari),
+        ),
     )
 
 
 def render_sheet_14_caf(doc: Document, bal: BalantaData, cpp: CPPResult, sig: SIGResult, res: CAFResult) -> None:
-    """Generează secțiunea Capacității de Autofinanțare (CAF) într-un singur tabel unificat."""
+    """Generează secțiunea Capacității de Autofinanțare (CAF)."""
     add_heading(doc, "14. Capacitatea de Autofinanțare (CAF — Metoda Deductivă și Metoda Aditivă)", level=1)
 
+    fl = bal.period.flow_labels
+    luna = bal.period.month_name or "Luna curentă"
     headers = [
-        "Componentă de Calcul a Capacității de Autofinanțare (lei)",
-        "Perioada de raportare 0",
-        "Perioada de raportare 1",
-        "Perioada de raportare 2",
-        "Δ (P1 - P0)",
-        "Δ (P2 - P1)",
-        "I (P2 / P1)",
-        "Ritm mediu",
+        "Componentă de calcul a capacității de autofinanțare (lei)",
+        f"P1 cumulat {fl[1]}",
+        f"P2 cumulat {fl[2]}",
+        f"Rulaj {luna} (P2 - P1)",
     ]
-
-    items = [
-        ("Excedentul / Insuficiența brută de exploatare (EBE)", sig.ebe, False),
-        ("+ Alte venituri monetare din exploatare (ct. 758)", cpp.rd(10), False),
-        ("- Alte cheltuieli monetare de exploatare (ct. 658)", cpp.rd(30), False),
-        ("+ Venituri financiare monetare (ct. 765 + 766 + 768)", cpp.rd(45), False),
-        ("- Cheltuieli financiare monetare (ct. 665 + 666)", cpp.rd(52), False),
-        ("- Impozitul pe profit (ct. 691)", cpp.rd(65), False),
-        ("= CAPACITATEA DE AUTOFINANȚARE — METODA DEDUCTIVĂ", res.caf_deductiv, True),
-        ("Rezultatul net al exercițiului (Profit net)", sig.rezultat_net, False),
-        ("+ Cheltuieli calculate cu amortizarea imobilizărilor (ct. 6811)", cpp.rd(22), False),
-        ("= CAPACITATEA DE AUTOFINANȚARE — METODA ADITIVĂ", res.caf_aditiv, True),
-    ]
-
     rows = []
     tot_idx = []
-    for i, (label, vals, is_tot) in enumerate(items):
+
+    def _add(label: str, vals: Triple, is_tot: bool = False) -> None:
+        if not is_tot and abs(vals[1]) < 1e-6 and abs(vals[2]) < 1e-6:
+            return
         if is_tot:
-            tot_idx.append(i)
-        d = calc_delta(vals)
-        idx = calc_index(vals)
-        rm = calc_ritm_mediu(vals)
-        rows.append([
-            label,
-            fmt_money(vals[0]),
-            fmt_money(vals[1]),
-            fmt_money(vals[2]),
-            fmt_money(d[0]),
-            fmt_money(d[1]),
-            fmt_ratio_pct(idx[1]),
-            fmt_ratio_pct(rm),
-        ])
+            tot_idx.append(len(rows))
+        rows.append([label, fmt_money(vals[1]), fmt_money(vals[2]), fmt_money(vals[2] - vals[1])])
 
-    make_table(
-        doc,
-        headers=headers,
-        rows=rows,
-        col_widths=[5.2, 1.9, 1.9, 1.9, 1.8, 1.8, 1.65, 1.65],
-        total_rows=tot_idx,
-        font_size=7.7,
+    for lbl, v in res.componente_ded:
+        _add(lbl, v)
+    _add("= CAPACITATEA DE AUTOFINANȚARE — METODA DEDUCTIVĂ", res.caf_deductiv, True)
+    for lbl, v in res.componente_ad:
+        _add(lbl, v)
+    _add("= CAPACITATEA DE AUTOFINANȚARE — METODA ADITIVĂ", res.caf_aditiv, True)
+    _add("Diferența dintre metode (trebuie să fie 0)", res.diferenta, True)
+
+    make_table(doc, headers=headers, rows=rows, col_widths=[8.2, 2.6, 2.6, 2.6], total_rows=tot_idx, font_size=7.7)
+
+    ok = all(abs(res.diferenta[p]) <= 0.05 for p in (1, 2))
+    flow_caf = describe_flow(res.caf_deductiv, bal, "capacitatea de autofinanțare")
+    caf2 = res.caf_deductiv[2]
+    rn2 = cpp.rezultat_net[2]
+    amort2 = cpp.it("amortizare")[2]
+    ca2 = cpp.cifra_afaceri[2]
+    rata_caf = safe_div(caf2, ca2, default=None) if abs(ca2) > 1e-6 else None
+
+    verif = (
+        "Metoda deductivă și metoda aditivă conduc la aceeași valoare în ambele perioade"
+        if ok
+        else f"ATENȚIE: metodele diferă (P1: {fmt_money(res.diferenta[1])} lei; P2: {fmt_money(res.diferenta[2])} lei), ceea ce indică o încadrare incompletă a conturilor"
     )
-
-    traj_caf = describe_trajectory(res.caf_deductiv, bal, "s14_caf", "Capacitatea de autofinanțare (CAF)")
-    amort2 = cpp.rd(21)[2]
-    rn2 = sig.rezultat_net[2]
-
-    if res.caf_deductiv[2] > 0:
-        s14_msg = pick_variant(
-            bal,
-            "s14_poz",
-            [
-                f"Sinteză CAF: Atât metoda deductivă (pornind de la EBE), cât și metoda aditivă (pornind de la profitul net de {fmt_money(rn2)} lei plus amortizarea nemonetară de {fmt_money(amort2)} lei în perioada de raportare 2) conduc la rezultate identice; pe ansamblul intervalului, {traj_caf} (ritm mediu {fmt_ratio_pct(res.ritm_ded)}), generând un surplus monetar intern robust pentru finanțarea investițiilor și rambursarea datoriilor.",
-                f"Evaluarea potențialului de autofinanțare: Concordanța dintre abordarea deductivă și cea aditivă este deplină în toate cele trei perioade de raportare; {traj_caf}, susținută în perioada de raportare 2 de rezultatul net ({fmt_money(rn2)} lei) și de cheltuielile calculate cu amortizarea ({fmt_money(amort2)} lei).",
-                f"Diagnostic de autofinanțare: Egalitatea CAF deductiv = CAF aditiv se verifică la cent; {traj_caf} (ritm mediu de variație {fmt_ratio_pct(res.ritm_ded)}), confirmând capacitatea operațiunilor curente de a degaja lichidități proprii ({fmt_money(res.caf_deductiv[2])} lei în perioada de raportare 2).",
-            ],
+    if caf2 > 0:
+        concl = (
+            f"Activitatea generează un surplus monetar intern de {fmt_money(caf2)} lei până la finele perioadei de raportare 2 "
+            f"({fmt_ratio_pct(rata_caf)} din cifra de afaceri), format din rezultatul net ({fmt_money(rn2)} lei) și cheltuielile "
+            f"nemonetare cu amortizarea ({fmt_money(amort2)} lei), disponibil pentru investiții, rambursarea datoriilor și dividende."
         )
     else:
-        s14_msg = (
-            f"Sinteză CAF: Metoda deductivă și metoda aditivă conduc la aceeași valoare în toate perioadele; {traj_caf}, semnalând necesitatea redresării marjelor operaționale pentru refacerea surplusului monetar intern."
+        concl = (
+            f"Activitatea nu generează surplus monetar intern până la finele perioadei de raportare 2 (CAF = {fmt_money(caf2)} lei), "
+            f"ceea ce impune redresarea marjelor operaționale."
         )
-    add_paragraph(doc, s14_msg)
+    add_paragraph(doc, f"Sinteză CAF: {verif}; {flow_caf}. {concl}")

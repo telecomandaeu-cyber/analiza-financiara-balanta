@@ -14,15 +14,26 @@ from typing import Tuple
 from docx import Document
 
 from core_balanta import (
+    ND,
     BalantaData,
     add_heading,
     add_paragraph,
     fmt_num,
     fmt_ratio_pct,
+    is_nd,
     make_table,
     pick_variant,
     safe_div,
 )
+
+
+def norma_ok(v: float, plafon: float) -> bool:
+    """Norma este respectată doar dacă indicatorul este definit și nu depășește plafonul."""
+    return (not is_nd(v)) and v <= plafon
+
+
+def _da_nu(v: float, plafon: float) -> str:
+    return "Da" if norma_ok(v, plafon) else "Nu"
 from sheet_01_bilant import BilantResult
 from sheet_03_bilant_financiar import BilantFinanciarResult
 from sheet_05_structura_financiara import StructuraFinanciaraResult
@@ -46,27 +57,28 @@ class CapacitateIndatorareResult:
 def compute_sheet_15_capacitatea_indatorare(
     bil: BilantResult, bf: BilantFinanciarResult, sf: StructuraFinanciaraResult
 ) -> CapacitateIndatorareResult:
+    # Raportările la capitalurile proprii nu au sens economic când CP ≤ 0 (n.d. → norma nu este respectată).
     cig1_f = tuple(safe_div(sf.dtot[p], sf.pasiv1[p]) for p in range(3))
-    cig2_f = tuple(safe_div(sf.dtot[p], sf.cp[p]) for p in range(3))
-    cit1_f = tuple(safe_div(sf.dtl[p], sf.cperm[p]) for p in range(3))
-    cit2_f = tuple(safe_div(sf.dtl[p], sf.cp[p]) for p in range(3))
+    cig2_f = tuple(safe_div(sf.dtot[p], sf.cp[p]) if sf.cp[p] > 0 else ND for p in range(3))
+    cit1_f = tuple(safe_div(sf.dtl[p], sf.cperm[p]) if sf.cperm[p] > 0 else ND for p in range(3))
+    cit2_f = tuple(safe_div(sf.dtl[p], sf.cp[p]) if sf.cp[p] > 0 else ND for p in range(3))
 
     v_fin = []
     for p, per_lbl in enumerate(("perioada de raportare 0", "perioada de raportare 1", "perioada de raportare 2")):
-        ok = (cig1_f[p] <= 0.66) and (cig2_f[p] <= 2.0) and (cit1_f[p] <= 0.50) and (cit2_f[p] <= 1.0)
+        ok = norma_ok(cig1_f[p], 0.66) and norma_ok(cig2_f[p], 2.0) and norma_ok(cit1_f[p], 0.50) and norma_ok(cit2_f[p], 1.0)
         v_fin.append(
             f"În {per_lbl}, întreprinderea {'ARE' if ok else 'NU ARE'} capacitate de îndatorare în optica brută (cu venituri în avans)"
         )
 
     dt_ef = tuple(round(bil.rd(11)[p] + bil.rd(14)[p], 2) for p in range(3))
     cig1_e = tuple(safe_div(dt_ef[p], sf.pasiv1[p]) for p in range(3))
-    cig2_e = tuple(safe_div(dt_ef[p], sf.cp[p]) for p in range(3))
+    cig2_e = tuple(safe_div(dt_ef[p], sf.cp[p]) if sf.cp[p] > 0 else ND for p in range(3))
     cit1_e = cit1_f
     cit2_e = cit2_f
 
     v_ef = []
     for p, per_lbl in enumerate(("perioada de raportare 0", "perioada de raportare 1", "perioada de raportare 2")):
-        ok = (cig1_e[p] <= 0.66) and (cig2_e[p] <= 2.0) and (cit1_e[p] <= 0.50) and (cit2_e[p] <= 1.0)
+        ok = norma_ok(cig1_e[p], 0.66) and norma_ok(cig2_e[p], 2.0) and norma_ok(cit1_e[p], 0.50) and norma_ok(cit2_e[p], 1.0)
         v_ef.append(
             f"În {per_lbl}, întreprinderea {'ARE' if ok else 'NU ARE'} capacitate deplină de îndatorare pe datoriile efective"
         )
@@ -108,9 +120,9 @@ def render_sheet_15_capacitatea_indatorare(
             fmt_num(res.cig1_fin[0], 4),
             fmt_num(res.cig1_fin[1], 4),
             fmt_num(res.cig1_fin[2], 4),
-            "Da" if res.cig1_fin[0] <= 0.66 else "Nu",
-            "Da" if res.cig1_fin[1] <= 0.66 else "Nu",
-            "Da" if res.cig1_fin[2] <= 0.66 else "Nu",
+            _da_nu(res.cig1_fin[0], 0.66),
+            _da_nu(res.cig1_fin[1], 0.66),
+            _da_nu(res.cig1_fin[2], 0.66),
         ],
         [
             "CIG 1 efectiv <= 0,66 (fără ct. 472+475)",
@@ -118,9 +130,9 @@ def render_sheet_15_capacitatea_indatorare(
             fmt_num(res.cig1_ef[0], 4),
             fmt_num(res.cig1_ef[1], 4),
             fmt_num(res.cig1_ef[2], 4),
-            "Da" if res.cig1_ef[0] <= 0.66 else "Nu",
-            "Da" if res.cig1_ef[1] <= 0.66 else "Nu",
-            "Da" if res.cig1_ef[2] <= 0.66 else "Nu",
+            _da_nu(res.cig1_ef[0], 0.66),
+            _da_nu(res.cig1_ef[1], 0.66),
+            _da_nu(res.cig1_ef[2], 0.66),
         ],
         [
             "CIG 2 <= 2,00 (Bilanț Financiar)",
@@ -128,9 +140,9 @@ def render_sheet_15_capacitatea_indatorare(
             fmt_num(res.cig2_fin[0], 4),
             fmt_num(res.cig2_fin[1], 4),
             fmt_num(res.cig2_fin[2], 4),
-            "Da" if res.cig2_fin[0] <= 2.0 else "Nu",
-            "Da" if res.cig2_fin[1] <= 2.0 else "Nu",
-            "Da" if res.cig2_fin[2] <= 2.0 else "Nu",
+            _da_nu(res.cig2_fin[0], 2.0),
+            _da_nu(res.cig2_fin[1], 2.0),
+            _da_nu(res.cig2_fin[2], 2.0),
         ],
         [
             "CIG 2 efectiv <= 2,00 (fără ct. 472+475)",
@@ -138,9 +150,9 @@ def render_sheet_15_capacitatea_indatorare(
             fmt_num(res.cig2_ef[0], 4),
             fmt_num(res.cig2_ef[1], 4),
             fmt_num(res.cig2_ef[2], 4),
-            "Da" if res.cig2_ef[0] <= 2.0 else "Nu",
-            "Da" if res.cig2_ef[1] <= 2.0 else "Nu",
-            "Da" if res.cig2_ef[2] <= 2.0 else "Nu",
+            _da_nu(res.cig2_ef[0], 2.0),
+            _da_nu(res.cig2_ef[1], 2.0),
+            _da_nu(res.cig2_ef[2], 2.0),
         ],
         [
             "CIT 1 <= 0,50 (Îndatorare la termen)",
@@ -148,9 +160,9 @@ def render_sheet_15_capacitatea_indatorare(
             fmt_num(res.cit1_fin[0], 4),
             fmt_num(res.cit1_fin[1], 4),
             fmt_num(res.cit1_fin[2], 4),
-            "Da" if res.cit1_fin[0] <= 0.50 else "Nu",
-            "Da" if res.cit1_fin[1] <= 0.50 else "Nu",
-            "Da" if res.cit1_fin[2] <= 0.50 else "Nu",
+            _da_nu(res.cit1_fin[0], 0.50),
+            _da_nu(res.cit1_fin[1], 0.50),
+            _da_nu(res.cit1_fin[2], 0.50),
         ],
         [
             "CIT 2 <= 1,00 (Îndatorare la termen)",
@@ -158,9 +170,9 @@ def render_sheet_15_capacitatea_indatorare(
             fmt_num(res.cit2_fin[0], 4),
             fmt_num(res.cit2_fin[1], 4),
             fmt_num(res.cit2_fin[2], 4),
-            "Da" if res.cit2_fin[0] <= 1.0 else "Nu",
-            "Da" if res.cit2_fin[1] <= 1.0 else "Nu",
-            "Da" if res.cit2_fin[2] <= 1.0 else "Nu",
+            _da_nu(res.cit2_fin[0], 1.0),
+            _da_nu(res.cit2_fin[1], 1.0),
+            _da_nu(res.cit2_fin[2], 1.0),
         ],
     ]
 
@@ -173,7 +185,7 @@ def render_sheet_15_capacitatea_indatorare(
         font_size=7.7,
     )
 
-    all_ok = res.cig1_ef[2] <= 0.66 and res.cig2_ef[2] <= 2.0 and res.cit1_fin[2] <= 0.50 and res.cit2_fin[2] <= 1.0
+    all_ok = norma_ok(res.cig1_ef[2], 0.66) and norma_ok(res.cig2_ef[2], 2.0) and norma_ok(res.cit1_fin[2], 0.50) and norma_ok(res.cit2_fin[2], 1.0)
     if all_ok:
         s15_msg = pick_variant(
             bal,

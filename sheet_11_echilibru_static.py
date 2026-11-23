@@ -71,7 +71,7 @@ def render_sheet_11_echilibru_static(
             res.interp_fr[2],
         ],
         [
-            "NFR (Necesarul de fond de rulment = AC fără disp. - DTS)",
+            "NFR (Necesarul de fond de rulment = Stocuri + Creanțe - DTS fără credite de trezorerie)",
             fmt_money(res.nfr[0]),
             fmt_money(res.nfr[1]),
             fmt_money(res.nfr[2]),

@@ -35,9 +35,23 @@ from sheet_01_bilant import BilantResult
 @dataclass
 class BilantFinanciarResult:
     rows: Dict[int, Tuple[float, float, float]] = field(default_factory=dict)
+    credite_trezorerie: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    imprumuturi_asociati: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rezerve_si_rezultate: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    capital_social: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    venituri_avans: Tuple[float, float, float] = (0.0, 0.0, 0.0)
 
     def r(self, idx: int) -> Tuple[float, float, float]:
         return self.rows.get(idx, (0.0, 0.0, 0.0))
+
+    @property
+    def datorii_financiare(self) -> Tuple[float, float, float]:
+        """Datorii purtătoare de dobândă: împrumuturi peste un an (ct. 16x), credite de trezorerie
+        (ct. 519, descoperit de cont 512) și împrumuturile asociaților (ct. 455)."""
+        return tuple(
+            round(self.datorii_termen_lung[p] + self.credite_trezorerie[p] + self.imprumuturi_asociati[p], 2)
+            for p in range(3)
+        )  # type: ignore[return-value]
 
     @property
     def imobilizari_necorporale(self) -> Tuple[float, float, float]:
@@ -132,6 +146,11 @@ def compute_sheet_03_bilant_financiar(bil: BilantResult) -> BilantFinanciarResul
         6: r6, 7: r7, 8: r8, 9: r9, 10: r10,
         11: r11, 12: r12, 13: r13, 14: r14, 15: r15,
     }
+    res.credite_trezorerie = bil.credite_trezorerie
+    res.imprumuturi_asociati = bil.imprumuturi_asociati
+    res.rezerve_si_rezultate = bil.rezerve_si_rezultate
+    res.capital_social = bil.rd(23)
+    res.venituri_avans = ven_av
     return res
 
 

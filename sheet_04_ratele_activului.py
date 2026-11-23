@@ -9,12 +9,14 @@ precum și corelația dinamicii activelor imobilizate și circulante cu cifra de
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from docx import Document
 
 from core_balanta import (
+    fmt_pp,
     BalantaData,
+    all_ok,
     add_heading,
     add_paragraph,
     calc_delta,
@@ -51,6 +53,7 @@ class RateActivResult:
     r_ac: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     semnal_ai: Tuple[str, str] = ("", "")
     semnal_ac: Tuple[str, str] = ("", "")
+    i_ca: Tuple[Optional[float], Optional[float]] = (None, None)
 
 
 def _build_sub_block(
@@ -79,7 +82,9 @@ def _build_sub_block(
     )
 
 
-def compute_sheet_04_ratele_activului(bf: BilantFinanciarResult, cpp: CPPResult) -> RateActivResult:
+def compute_sheet_04_ratele_activului(
+    bf: BilantFinanciarResult, cpp: CPPResult, months: Tuple[int, int, int] = (0, 8, 9)
+) -> RateActivResult:
     res = RateActivResult()
     ai = bf.active_imobilizate
     ac = bf.active_circulante
@@ -155,25 +160,30 @@ def compute_sheet_04_ratele_activului(bf: BilantFinanciarResult, cpp: CPPResult)
 
     i_ai = calc_index(ai)
     i_ac = calc_index(ac)
-    i_ca = calc_index(cpp.cifra_afaceri)
+    i_ca = res.i_ca = index_ca_lunar(cpp, months)
 
-    s_ai = []
-    for idx in (0, 1):
-        if i_ca[idx] is not None and i_ai[idx] is not None and i_ca[idx] >= i_ai[idx]:
-            s_ai.append("Semnal favorabil (I_CA >= I_AI)")
-        else:
-            s_ai.append("Semnal nefavorabil (I_CA < I_AI)")
-    res.semnal_ai = (s_ai[0], s_ai[1])
+    def _semnal(ica, iact, tag: str) -> str:
+        if ica is None or iact is None:
+            return "n.d."
+        if ica >= iact:
+            return f"Semnal favorabil (I_CA >= {tag})"
+        return f"Semnal nefavorabil (I_CA < {tag})"
 
-    s_ac = []
-    for idx in (0, 1):
-        if i_ca[idx] is not None and i_ac[idx] is not None and i_ca[idx] >= i_ac[idx]:
-            s_ac.append("Semnal favorabil (I_CA >= I_AC)")
-        else:
-            s_ac.append("Semnal nefavorabil (I_CA < I_AC)")
-    res.semnal_ac = (s_ac[0], s_ac[1])
-
+    res.semnal_ai = (_semnal(i_ca[0], i_ai[0], "I_AI"), _semnal(i_ca[1], i_ai[1], "I_AI"))
+    res.semnal_ac = (_semnal(i_ca[0], i_ac[0], "I_AC"), _semnal(i_ca[1], i_ac[1], "I_AC"))
     return res
+
+
+def index_ca_lunar(cpp: CPPResult, months: Tuple[int, int, int]) -> Tuple[Optional[float], Optional[float]]:
+    """
+    Indicele cifrei de afaceri calculat pe MEDIA LUNARĂ a rulajelor cumulate (CA2/m2 ÷ CA1/m1),
+    deoarece P1 și P2 acoperă intervale de lungimi diferite. Pentru P1/P0 nu există rulaje în P0.
+    """
+    ca = cpp.cifra_afaceri
+    m1, m2 = months[1], months[2]
+    if m1 <= 0 or not all_ok(ca[1], ca[2]) or abs(ca[1]) < 1e-9:
+        return (None, None)
+    return (None, (ca[2] / m2) / (ca[1] / m1))
 
 
 def render_sheet_04_ratele_activului(
@@ -203,8 +213,8 @@ def render_sheet_04_ratele_activului(
             fmt_ratio_pct(res.r_ai[0]),
             fmt_ratio_pct(res.r_ai[1]),
             fmt_ratio_pct(res.r_ai[2]),
-            fmt_ratio_pct(d_rai[0], plus_sign=True),
-            fmt_ratio_pct(d_rai[1], plus_sign=True),
+            fmt_pp(d_rai[0]),
+            fmt_pp(d_rai[1]),
             fmt_ratio_pct(i_rai[1]),
         ],
     ]
@@ -218,8 +228,8 @@ def render_sheet_04_ratele_activului(
             f"{fmt_ratio_pct(b.rate1_vals[0])} / {fmt_ratio_pct(b.rate2_vals[0])}",
             f"{fmt_ratio_pct(b.rate1_vals[1])} / {fmt_ratio_pct(b.rate2_vals[1])}",
             f"{fmt_ratio_pct(b.rate1_vals[2])} / {fmt_ratio_pct(b.rate2_vals[2])}",
-            f"{fmt_ratio_pct(d1[0], plus_sign=True)} / {fmt_ratio_pct(d2[0], plus_sign=True)}",
-            f"{fmt_ratio_pct(d1[1], plus_sign=True)} / {fmt_ratio_pct(d2[1], plus_sign=True)}",
+            f"{fmt_pp(d1[0])} / {fmt_pp(d2[0])}",
+            f"{fmt_pp(d1[1])} / {fmt_pp(d2[1])}",
             f"{fmt_ratio_pct(i1[1])} / {fmt_ratio_pct(i2[1])}",
         ])
 
@@ -229,8 +239,8 @@ def render_sheet_04_ratele_activului(
         fmt_ratio_pct(res.r_ac[0]),
         fmt_ratio_pct(res.r_ac[1]),
         fmt_ratio_pct(res.r_ac[2]),
-        fmt_ratio_pct(d_rac[0], plus_sign=True),
-        fmt_ratio_pct(d_rac[1], plus_sign=True),
+        fmt_pp(d_rac[0]),
+        fmt_pp(d_rac[1]),
         fmt_ratio_pct(i_rac[1]),
     ])
 
@@ -242,18 +252,18 @@ def render_sheet_04_ratele_activului(
             f"{fmt_ratio_pct(b.rate1_vals[0])} / {fmt_ratio_pct(b.rate2_vals[0])}",
             f"{fmt_ratio_pct(b.rate1_vals[1])} / {fmt_ratio_pct(b.rate2_vals[1])}",
             f"{fmt_ratio_pct(b.rate1_vals[2])} / {fmt_ratio_pct(b.rate2_vals[2])}",
-            f"{fmt_ratio_pct(d1[0], plus_sign=True)} / {fmt_ratio_pct(d2[0], plus_sign=True)}",
-            f"{fmt_ratio_pct(d1[1], plus_sign=True)} / {fmt_ratio_pct(d2[1], plus_sign=True)}",
+            f"{fmt_pp(d1[0])} / {fmt_pp(d2[0])}",
+            f"{fmt_pp(d1[1])} / {fmt_pp(d2[1])}",
             f"{fmt_ratio_pct(i1[1])} / {fmt_ratio_pct(i2[1])}",
         ])
 
-    i_ca = calc_index(cpp.cifra_afaceri)
+    i_ca = res.i_ca
     i_ai = calc_index(bf.active_imobilizate)
     i_ac = calc_index(bf.active_circulante)
 
     tot_idx.extend([len(rows), len(rows) + 1])
     rows.append([
-        "Corelație Cifra de afaceri vs. Active imobilizate (I_CA >= I_AI)",
+        "Corelație CA (indice pe media lunară) vs. Active imobilizate (I_CA >= I_AI)",
         "—",
         f"I_CA={fmt_ratio_pct(i_ca[0])} vs I_AI={fmt_ratio_pct(i_ai[0])}",
         f"I_CA={fmt_ratio_pct(i_ca[1])} vs I_AI={fmt_ratio_pct(i_ai[1])}",
@@ -262,7 +272,7 @@ def render_sheet_04_ratele_activului(
         res.semnal_ai[1],
     ])
     rows.append([
-        "Corelație Cifra de afaceri vs. Active circulante (I_CA >= I_AC)",
+        "Corelație CA (indice pe media lunară) vs. Active circulante (I_CA >= I_AC)",
         "—",
         f"I_CA={fmt_ratio_pct(i_ca[0])} vs I_AC={fmt_ratio_pct(i_ac[0])}",
         f"I_CA={fmt_ratio_pct(i_ca[1])} vs I_AC={fmt_ratio_pct(i_ac[1])}",
@@ -285,7 +295,12 @@ def render_sheet_04_ratele_activului(
     r_cre2 = res.sub_blocks[4].rate1_vals[2]
     r_disp2 = res.sub_blocks[5].rate1_vals[2]
 
-    if "favorabil" in res.semnal_ai[1] and "favorabil" in res.semnal_ac[1]:
+    fav_ai = res.semnal_ai[1].startswith("Semnal favorabil")
+    fav_ac = res.semnal_ac[1].startswith("Semnal favorabil")
+    nd_sig = res.semnal_ai[1] == "n.d." or res.semnal_ac[1] == "n.d."
+    if nd_sig:
+        cor_msg = "Corelația dintre dinamica cifrei de afaceri și cea a activelor nu poate fi determinată (cifra de afaceri a perioadei 1 este nulă sau nedisponibilă)."
+    elif fav_ai and fav_ac:
         cor_msg = pick_variant(
             bal,
             "s04_cor_both_ok",
@@ -294,7 +309,7 @@ def render_sheet_04_ratele_activului(
                 f"Compararea ritmurilor de creștere între perioada de raportare 1 și perioada de raportare 2 confirmă devansarea dinamicii activelor (I_AI = {fmt_ratio_pct(i_ai[1])}, I_AC = {fmt_ratio_pct(i_ac[1])}) de către cifra de afaceri (I_CA = {fmt_ratio_pct(i_ca[1])}), generând semnal favorabil pe ambele paliere.",
             ],
         )
-    elif "favorabil" not in res.semnal_ai[1] and "favorabil" not in res.semnal_ac[1]:
+    elif not fav_ai and not fav_ac:
         cor_msg = pick_variant(
             bal,
             "s04_cor_both_bad",

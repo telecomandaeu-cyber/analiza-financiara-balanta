@@ -10,12 +10,14 @@ Modulul central de extracție contabilă și formatare a raportului (core_balant
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import math
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import fitz  # PyMuPDF
 from docx import Document
@@ -28,6 +30,54 @@ from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 NumberLike = Union[int, float]
+
+# Valoare „nedisponibilă” (n.d.): se propagă automat prin operațiile aritmetice
+# și este afișată ca „n.d.” de funcțiile de formatare. Se folosește pentru
+# indicatorii de flux (CPP) în Perioada de raportare 0, care reprezintă doar
+# soldurile de deschidere ale exercițiului și nu conține rulaje de venituri/cheltuieli.
+ND = float("nan")
+
+
+def is_nd(v: Optional[NumberLike]) -> bool:
+    """True dacă valoarea lipsește (None) sau este nedisponibilă (NaN)."""
+    if v is None:
+        return True
+    try:
+        return math.isnan(float(v))
+    except (TypeError, ValueError):
+        return True
+
+
+def all_ok(*vals: Optional[NumberLike]) -> bool:
+    """True dacă toate valorile sunt disponibile (nici None, nici NaN)."""
+    return not any(is_nd(v) for v in vals)
+
+
+_LUNI_RO = {
+    "ianuarie": 1, "februarie": 2, "martie": 3, "aprilie": 4, "mai": 5, "iunie": 6,
+    "iulie": 7, "august": 8, "septembrie": 9, "octombrie": 10, "noiembrie": 11, "decembrie": 12,
+}
+_LUNI_RO_NUME = {v: k for k, v in _LUNI_RO.items()}
+
+
+def _strip_diacritics(s: str) -> str:
+    return "".join(ch for ch in unicodedata.normalize("NFKD", s) if not unicodedata.combining(ch))
+
+
+def parse_period_text(text: str) -> Optional[Tuple[int, int]]:
+    """Extrage (luna, anul) dintr-un text de tipul „Septembrie 2026” / „Septembrie.2026” / „09.2026”."""
+    t = _strip_diacritics(text or "").lower()
+    m_year = re.search(r"(20\d{2}|19\d{2})", t)
+    if not m_year:
+        return None
+    year = int(m_year.group(1))
+    for name, num in _LUNI_RO.items():
+        if name in t:
+            return num, year
+    m_num = re.search(r"\b(0?[1-9]|1[0-2])[./-](20\d{2}|19\d{2})", t)
+    if m_num:
+        return int(m_num.group(1)), int(m_num.group(2))
+    return None
 
 # ==============================================================================
 # PALETA CROMATICĂ PENTRU DOCUMENTUL WORD
@@ -60,38 +110,104 @@ COLOR_BAD_TEXT = "991B1B"
 # ==============================================================================
 @dataclass
 class AccountRow:
+    """
+    Un rând din balanța de verificare cu 8 coloane. „Total sume” include soldul inițial
+    (TSD = SID + rulaje debitoare cumulate de la începutul anului), astfel încât
+    SFD - SFC = TSD - TSC.
+    """
+
     symbol: str
     name: str
-    sid: float  # Sold inițial debitor (01.01.2026)
-    sic: float  # Sold inițial creditor (01.01.2026)
-    rld: float  # Rulaj lunar debitor (Septembrie 2026)
-    rlc: float  # Rulaj lunar creditor (Septembrie 2026)
-    tsd: float  # Total sume debitoare (Cumulat la 30.09.2026)
-    tsc: float  # Total sume creditoare (Cumulat la 30.09.2026)
-    sfd: float  # Sold final debitor (30.09.2026)
-    sfc: float  # Sold final creditor (30.09.2026)
+    sid: float  # Sold inițial debitor (la începutul exercițiului)
+    sic: float  # Sold inițial creditor (la începutul exercițiului)
+    rld: float  # Rulaj debitor al lunii de raportare
+    rlc: float  # Rulaj creditor al lunii de raportare
+    tsd: float  # Total sume debitoare (cumulat de la începutul anului, inclusiv SID)
+    tsc: float  # Total sume creditoare (cumulat de la începutul anului, inclusiv SIC)
+    sfd: float  # Sold final debitor (la sfârșitul lunii de raportare)
+    sfc: float  # Sold final creditor (la sfârșitul lunii de raportare)
 
     @property
     def prev_tsd(self) -> float:
-        """Total sume debitoare la finele lunii precedente (31.08.2026) = TSD - RLD."""
+        """Total sume debitoare la finele lunii precedente = TSD - RLD."""
         return self.tsd - self.rld
 
     @property
     def prev_tsc(self) -> float:
-        """Total sume creditoare la finele lunii precedente (31.08.2026) = TSC - RLC."""
+        """Total sume creditoare la finele lunii precedente = TSC - RLC."""
         return self.tsc - self.rlc
 
     @property
+    def net_t1(self) -> float:
+        """Sold net debitor (D - C) la finele lunii precedente (Perioada de raportare 1)."""
+        return self.prev_tsd - self.prev_tsc
+
+    @property
     def sfd_t1(self) -> float:
-        """Sold debitor la 31.08.2026 (Perioada de raportare 1)."""
-        net = self.prev_tsd - self.prev_tsc
+        """Sold debitor la finele lunii precedente (Perioada de raportare 1)."""
+        net = self.net_t1
         return net if net > 0 else 0.0
 
     @property
     def sfc_t1(self) -> float:
-        """Sold creditor la 31.08.2026 (Perioada de raportare 1)."""
-        net = self.prev_tsc - self.prev_tsd
+        """Sold creditor la finele lunii precedente (Perioada de raportare 1)."""
+        net = -self.net_t1
         return net if net > 0 else 0.0
+
+
+@dataclass
+class PeriodInfo:
+    """Datele calendaristice ale celor trei momente de analiză, deduse din balanță."""
+
+    year: int = 2026
+    month: int = 9
+
+    @property
+    def months(self) -> Tuple[int, int, int]:
+        """Numărul de luni cumulate în rulajele fiecărei perioade (P0 = 0 luni)."""
+        return (0, max(self.month - 1, 0), self.month)
+
+    @property
+    def days(self) -> Tuple[int, int, int]:
+        """Numărul de zile calendaristice acoperite de rulajele cumulate ale fiecărei perioade."""
+        d1 = sum(calendar.monthrange(self.year, m)[1] for m in range(1, self.month))
+        d2 = d1 + calendar.monthrange(self.year, self.month)[1]
+        return (0, d1, d2)
+
+    @property
+    def days_in_year(self) -> int:
+        return 366 if calendar.isleap(self.year) else 365
+
+    def annual_factor(self, p: int) -> float:
+        """Factorul de anualizare al rulajelor cumulate (365 / zile); NaN dacă perioada nu are rulaje."""
+        d = self.days[p]
+        return self.days_in_year / d if d > 0 else ND
+
+    @property
+    def dates(self) -> Tuple[str, str, str]:
+        d0 = f"01.01.{self.year}"
+        if self.month > 1:
+            last1 = calendar.monthrange(self.year, self.month - 1)[1]
+            d1 = f"{last1:02d}.{self.month - 1:02d}.{self.year}"
+        else:
+            d1 = d0
+        last2 = calendar.monthrange(self.year, self.month)[1]
+        d2 = f"{last2:02d}.{self.month:02d}.{self.year}"
+        return (d0, d1, d2)
+
+    @property
+    def month_name(self) -> str:
+        return _LUNI_RO_NUME.get(self.month, "").capitalize()
+
+    @property
+    def flow_labels(self) -> Tuple[str, str, str]:
+        """Descrierea intervalului cumulat acoperit de rulajele fiecărei perioade."""
+        d = self.dates
+        return (
+            "fără rulaje (solduri de deschidere)",
+            f"01.01–{d[1][:5]} ({self.months[1]} luni)" if self.months[1] > 0 else "fără rulaje",
+            f"01.01–{d[2][:5]} ({self.months[2]} luni)",
+        )
 
 
 @dataclass
@@ -102,24 +218,45 @@ class BalantaData:
     reg_com: str = ""
     adresa: str = ""
     telefon: str = ""
-    perioada: str = "Septembrie 2026"
+    perioada: str = ""
     punct_lucru: str = "SEDIU"
     sistem_erp: str = ""
     intocmit_de: str = ""
     accounts: Dict[str, AccountRow] = field(default_factory=dict)
     total_row: Optional[AccountRow] = None
+    period: PeriodInfo = field(default_factory=PeriodInfo)
+    warnings: List[str] = field(default_factory=list)
 
-    # Etichetele celor 3 perioade de raportare
-    period_labels: Tuple[str, str, str] = (
-        "Perioada de raportare 0 (01.01.2026)",
-        "Perioada de raportare 1 (31.08.2026)",
-        "Perioada de raportare 2 (30.09.2026)",
-    )
     short_labels: Tuple[str, str, str] = (
         "Perioada de raportare 0",
         "Perioada de raportare 1",
         "Perioada de raportare 2",
     )
+
+    @property
+    def period_labels(self) -> Tuple[str, str, str]:
+        d = self.period.dates
+        return (
+            f"Perioada de raportare 0 ({d[0]})",
+            f"Perioada de raportare 1 ({d[1]})",
+            f"Perioada de raportare 2 ({d[2]})",
+        )
+
+    @property
+    def col_labels(self) -> Tuple[str, str, str]:
+        """Etichete scurte de coloană pentru tabele: „P0 (01.01.2026)” etc."""
+        d = self.period.dates
+        return (f"P0 ({d[0]})", f"P1 ({d[1]})", f"P2 ({d[2]})")
+
+    # ------------------------------------------------------------------ conturi
+    def has(self, symbol: str) -> bool:
+        return str(symbol).strip() in self.accounts
+
+    def children(self, symbol: str) -> List[str]:
+        """Conturile de grad imediat inferior (ex.: 442 -> 4423, 4424, 4428)."""
+        sym = str(symbol).strip()
+        n = len(sym) + 1
+        return sorted(k for k in self.accounts if len(k) == n and k.isdigit() and k.startswith(sym))
 
     def get_acc(self, symbol: str) -> AccountRow:
         sym = str(symbol).strip()
@@ -127,64 +264,89 @@ class BalantaData:
             return self.accounts[sym]
         return AccountRow(sym, "", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
-    def sold_d(self, symbol: str, p: int) -> float:
-        """Soldul debitor al contului `symbol` în perioada de raportare p în {0, 1, 2}."""
-        a = self.get_acc(symbol)
-        if p == 0:
-            return a.sid
-        if p == 1:
-            return a.sfd_t1
-        return a.sfd
-
-    def sold_c(self, symbol: str, p: int) -> float:
-        """Soldul creditor al contului `symbol` în perioada de raportare p în {0, 1, 2}."""
-        a = self.get_acc(symbol)
-        if p == 0:
-            return a.sic
-        if p == 1:
-            return a.sfc_t1
-        return a.sfc
-
     def net_d(self, symbol: str, p: int) -> float:
-        """Sold net debitor (D - C) în perioada de raportare p."""
-        return self.sold_d(symbol, p) - self.sold_c(symbol, p)
+        """Sold net debitor (D - C) al contului în perioada de raportare p ∈ {0, 1, 2}."""
+        sym = str(symbol).strip()
+        if sym not in self.accounts:
+            kids = self.children(sym)
+            return sum(self.net_d(k, p) for k in kids) if kids else 0.0
+        a = self.accounts[sym]
+        if p == 0:
+            return a.sid - a.sic
+        if p == 1:
+            return a.net_t1
+        return a.sfd - a.sfc
 
     def net_c(self, symbol: str, p: int) -> float:
-        """Sold net creditor (C - D) în perioada de raportare p."""
-        return self.sold_c(symbol, p) - self.sold_d(symbol, p)
+        """Sold net creditor (C - D) al contului în perioada de raportare p."""
+        return -self.net_d(symbol, p)
 
-    def pos_d(self, symbol: str, p: int) -> float:
-        """Partea strict debitoare a soldului contului bifuncțional în perioada de raportare p."""
+    def sold_d(self, symbol: str, p: int) -> float:
         val = self.net_d(symbol, p)
         return val if val > 0 else 0.0
 
-    def pos_c(self, symbol: str, p: int) -> float:
-        """Partea strict creditoare a soldului contului bifuncțional în perioada de raportare p."""
+    def sold_c(self, symbol: str, p: int) -> float:
         val = self.net_c(symbol, p)
         return val if val > 0 else 0.0
 
-    @property
-    def scale_t0_cpp(self) -> float:
-        """
-        Coeficientul de ancorare a Contului de Profit și Pierdere pentru Perioada de raportare 0
-        față de Perioada de raportare 1, calibrat pe soldul inițial al contului 121 (1.182.456,30 lei)
-        raportat la rezultatul net la 31.08.2026 (1.490.432,48 lei).
-        """
-        r_t0 = self.net_c("121", 0)
-        r_t1 = self.net_c("121", 1)
-        if abs(r_t1) > 1e-2 and abs(r_t0) > 1e-2:
-            return r_t0 / r_t1
-        return 0.80
+    pos_d = sold_d
+    pos_c = sold_c
 
-    def rulaj_cpp(self, symbol: str, p: int, is_revenue: bool = True) -> float:
-        """Returnează rulajul cumulativ de venit (Clasa 7) sau cheltuială (Clasa 6) pentru perioada de raportare p."""
-        a = self.get_acc(symbol)
-        if p == 2:
-            return a.tsc if is_revenue else a.tsd
-        if p == 1:
-            return a.prev_tsc if is_revenue else a.prev_tsd
-        base_t1 = a.prev_tsc if is_revenue else a.prev_tsd
-        return round(base_t1 * self.scale_t0_cpp, 2)
+    # ------------------------------------------------------------------ rulaje
+    def flow_d(self, symbol: str, p: int) -> float:
+        """
+        Rulajul debitor cumulat de la începutul anului (fără soldul inițial) până la
+        sfârșitul perioadei p. Pentru P0 (solduri de deschidere) rezultatul este n.d.
+        Dacă un cont lipsește din balanță se însumează conturile de grad inferior.
+        """
+        if p == 0:
+            return ND
+        sym = str(symbol).strip()
+        if sym not in self.accounts:
+            kids = self.children(sym)
+            return sum(self.flow_d(k, p) for k in kids) if kids else 0.0
+        a = self.accounts[sym]
+        base = a.tsd if p == 2 else a.prev_tsd
+        return base - a.sid
+
+    def flow_c(self, symbol: str, p: int) -> float:
+        """Rulajul creditor cumulat de la începutul anului (fără soldul inițial) până la sfârșitul perioadei p."""
+        if p == 0:
+            return ND
+        sym = str(symbol).strip()
+        if sym not in self.accounts:
+            kids = self.children(sym)
+            return sum(self.flow_c(k, p) for k in kids) if kids else 0.0
+        a = self.accounts[sym]
+        base = a.tsc if p == 2 else a.prev_tsc
+        return base - a.sic
+
+    def synthetic_accounts(self) -> List[str]:
+        """Conturile sintetice de gradul I (3 cifre), plus conturile de 4 cifre fără părinte în balanță."""
+        syn = sorted(k for k in self.accounts if k.isdigit() and len(k) == 3)
+        orphans = sorted(
+            k for k in self.accounts if k.isdigit() and len(k) == 4 and k[:3] not in self.accounts
+        )
+        return syn + orphans
+
+    def leaf_accounts(self) -> List[str]:
+        """
+        Conturile la nivelul cel mai detaliat care reconstituie integral soldul fiecărui
+        cont sintetic. Conturile bifuncționale (ex. 442, 409, 518) trebuie împărțite pe
+        analitice/sintetice de gradul II, deoarece soldul sintetic este compensat (net).
+        """
+        leaves: List[str] = []
+        for syn in self.synthetic_accounts():
+            kids = self.children(syn)
+            if kids and len(syn) == 3:
+                ok = all(
+                    abs(sum(self.net_d(k, p) for k in kids) - self.net_d(syn, p)) < 0.05 for p in (0, 1, 2)
+                )
+                if ok:
+                    leaves.extend(kids)
+                    continue
+            leaves.append(syn)
+        return leaves
 
 
 # ==============================================================================
@@ -261,20 +423,75 @@ def parse_balanta_pdf(pdf_path: Union[str, Path]) -> BalantaData:
                     data.total_row = row_obj
                 else:
                     data.accounts[sym] = row_obj
-                i = j + 9
+                # După cele 8 coloane numerice, balanța repetă simbolul contului (coloana din dreapta).
+                skip = 8
+                if j + 8 < len(lines) and lines[j + 8] in (sym, sym.split()[-1]):
+                    skip = 9
+                i = j + skip
                 continue
         i += 1
 
+    # Perioada de raportare (luna și anul) — din antet sau din titlul paginilor.
+    per = parse_period_text(data.perioada)
+    if per is None:
+        for line in lines[:60]:
+            if "balanta" in _strip_diacritics(line).lower():
+                per = parse_period_text(line)
+                if per:
+                    break
+    if per is None:
+        data.warnings.append(
+            "Perioada de raportare nu a putut fi identificată din antetul balanței; s-a presupus luna 12 a anului curent."
+        )
+        import datetime as _dt
+
+        per = (12, _dt.date.today().year)
+    data.period = PeriodInfo(year=per[1], month=per[0])
+    if not data.perioada:
+        data.perioada = f"{data.period.month_name} {data.period.year}"
+
+    _validate_balanta(data)
     return data
+
+
+def _validate_balanta(data: BalantaData) -> None:
+    """Verifică egalitățile fundamentale ale balanței și consemnează eventualele abateri."""
+    if not data.accounts:
+        raise ValueError("Nu au fost identificate conturi în balanța de verificare (format PDF nerecunoscut).")
+    t = data.total_row
+    if t is not None:
+        for lbl, d, c in (("solduri inițiale", t.sid, t.sic), ("total sume", t.tsd, t.tsc), ("solduri finale", t.sfd, t.sfc)):
+            if abs(d - c) > 0.05:
+                data.warnings.append(
+                    f"Balanța nu este echilibrată la {lbl}: debit {fmt_money(d)} lei ≠ credit {fmt_money(c)} lei."
+                )
+    for sym, a in data.accounts.items():
+        if abs((a.tsd - a.tsc) - (a.sfd - a.sfc)) > 0.05:
+            data.warnings.append(
+                f"Contul {sym}: soldul final nu corespunde cu totalul sumelor (TSD - TSC ≠ SFD - SFC)."
+            )
 
 
 # ==============================================================================
 # FUNCȚII MATEMATICE ȘI STATISTICE COMUNE
 # ==============================================================================
 def safe_div(num: Optional[NumberLike], denom: Optional[NumberLike], default: float = 0.0) -> float:
-    if num is None or denom is None or abs(float(denom)) < 1e-12:
+    """Împărțire protejată: n.d. dacă un termen este n.d.; `default` dacă numitorul este zero."""
+    if is_nd(num) or is_nd(denom):
+        return ND
+    if abs(float(denom)) < 1e-12:
         return default
     return float(num) / float(denom)
+
+
+def ratio_or_nd(num: Optional[NumberLike], denom: Optional[NumberLike]) -> float:
+    """Raport care devine n.d. (nu 0) când numitorul este zero — pentru rate fără sens economic la bază nulă."""
+    return safe_div(num, denom, default=ND)
+
+
+def tup3(fn) -> Tuple[float, float, float]:
+    """Construiește un triplet (P0, P1, P2) aplicând fn(p)."""
+    return (fn(0), fn(1), fn(2))
 
 
 def calc_delta(vals: Sequence[float]) -> Tuple[float, float]:
@@ -282,9 +499,17 @@ def calc_delta(vals: Sequence[float]) -> Tuple[float, float]:
 
 
 def calc_index(vals: Sequence[float]) -> Tuple[Optional[float], Optional[float]]:
-    i10 = (vals[1] / vals[0]) if abs(vals[0]) > 1e-9 else None
-    i21 = (vals[2] / vals[1]) if abs(vals[1]) > 1e-9 else None
-    return (i10, i21)
+    """Indicii de dinamică I(P1/P0) și I(P2/P1); None dacă baza este nulă, negativă sau n.d."""
+
+    def _idx(a: float, b: float) -> Optional[float]:
+        if not all_ok(a, b) or abs(a) < 1e-9:
+            return None
+        # Un indice calculat pe o bază negativă nu are interpretare economică.
+        if a < 0:
+            return None
+        return b / a
+
+    return (_idx(vals[0], vals[1]), _idx(vals[1], vals[2]))
 
 
 def calc_growth_rate(vals: Sequence[float]) -> Tuple[Optional[float], Optional[float]]:
@@ -295,11 +520,12 @@ def calc_growth_rate(vals: Sequence[float]) -> Tuple[Optional[float], Optional[f
 
 
 def calc_ritm_mediu(vals: Sequence[float]) -> Optional[float]:
-    if abs(vals[0]) < 1e-9:
+    """Indicele mediu de dinamică (medie geometrică pe 2 intervale); None dacă nu este definit."""
+    if not all_ok(*vals) or abs(vals[0]) < 1e-9:
         return None
     ratio = vals[2] / vals[0]
-    if ratio < 0:
-        return -math.sqrt(abs(ratio))
+    if ratio <= 0:
+        return None
     return math.sqrt(ratio)
 
 
@@ -337,12 +563,17 @@ def dyn_sentence_rel(
     return f"{name} {verb} în {per_to} față de {per_from} în mărime relativă cu {fmt_pct(abs(rel) * 100.0)}."
 
 
+ND_TEXT = "n.d."
+
+
 def fmt_money(v: Optional[NumberLike], decimals: int = 2, dash_zero: bool = False) -> str:
     if v is None:
         return "—"
+    if is_nd(v):
+        return ND_TEXT
     val = float(v)
-    if dash_zero and abs(val) < 1e-6:
-        return "0,00"
+    if abs(val) < 0.5 * 10 ** (-decimals):
+        val = 0.0
     sign = "-" if val < 0 else ""
     abs_val = abs(val)
     formatted = f"{abs_val:,.{decimals}f}"
@@ -353,7 +584,11 @@ def fmt_money(v: Optional[NumberLike], decimals: int = 2, dash_zero: bool = Fals
 def fmt_pct(v: Optional[NumberLike], decimals: int = 2, plus_sign: bool = False) -> str:
     if v is None:
         return "—"
+    if is_nd(v):
+        return ND_TEXT
     val = float(v)
+    if abs(val) < 0.5 * 10 ** (-decimals):
+        val = 0.0
     sign = "+" if (plus_sign and val > 0) else ""
     s = f"{val:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
     return f"{sign}{s}%"
@@ -362,13 +597,33 @@ def fmt_pct(v: Optional[NumberLike], decimals: int = 2, plus_sign: bool = False)
 def fmt_ratio_pct(v: Optional[NumberLike], decimals: int = 2, plus_sign: bool = False) -> str:
     if v is None:
         return "—"
+    if is_nd(v):
+        return ND_TEXT
     return fmt_pct(float(v) * 100.0, decimals=decimals, plus_sign=plus_sign)
+
+
+def fmt_pp(v: Optional[NumberLike], decimals: int = 2) -> str:
+    """Diferență de rate exprimată în puncte procentuale (v este o fracție: 0,05 = 5 pp)."""
+    if v is None:
+        return "—"
+    if is_nd(v):
+        return ND_TEXT
+    val = float(v) * 100.0
+    if abs(val) < 0.5 * 10 ** (-decimals):
+        val = 0.0
+    sign = "+" if val > 0 else ""
+    s = f"{val:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"{sign}{s} pp"
 
 
 def fmt_num(v: Optional[NumberLike], decimals: int = 4) -> str:
     if v is None:
         return "—"
+    if is_nd(v):
+        return ND_TEXT
     val = float(v)
+    if abs(val) < 0.5 * 10 ** (-decimals):
+        val = 0.0
     return f"{val:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
@@ -593,8 +848,11 @@ def _detect_semantic_style(val_str: str) -> Optional[Tuple[str, str]]:
         "Corelație bună",
     ):
         return (COLOR_OK_BG, COLOR_OK_TEXT)
+    if s.startswith("EFECT DE MĂCIUCĂ"):
+        return (COLOR_BAD_BG, COLOR_BAD_TEXT)
     if (
         s.startswith("Semnal favorabil")
+        or s.startswith("EFECT DE LEVIER")
         or s.startswith("EFTL (")
         or s.startswith("EFTS (")
         or s.startswith("EFC (")
@@ -836,6 +1094,14 @@ def describe_trajectory(
     f1 = fmt_ratio_pct(v1) if is_ratio else f"{fmt_money(v1)} lei"
     f2 = fmt_ratio_pct(v2) if is_ratio else f"{fmt_money(v2)} lei"
 
+    if is_nd(v1) or is_nd(v2):
+        return f"{label} nu poate fi determinat(ă) pentru toate perioadele (valori n.d.)"
+    if is_nd(v0):
+        if abs(v2 - v1) <= max(abs(v1) * 0.015, 1e-4):
+            return f"{label} rămâne practic constant(ă) între perioada de raportare 1 ({f1}) și perioada de raportare 2 ({f2})"
+        verb = "crește" if v2 > v1 else "scade"
+        return f"{label} {verb} de la {f1} în perioada de raportare 1 la {f2} în perioada de raportare 2 (valoarea pentru perioada 0 nu este disponibilă)"
+
     rel_total = safe_div(v2 - v0, abs(v0)) if abs(v0) > 1e-6 else 0.0
     rel_str = fmt_ratio_pct(rel_total, plus_sign=True) if abs(v0) > 1e-6 else "n/a"
 
@@ -925,10 +1191,41 @@ def describe_trajectory(
         f"traj_down_{salt}",
         [
             f"{label} urmează o traiectorie descendentă ({rel_str}), diminuându-se de la {f0} în perioada de raportare 0 la {f1} în perioada de raportare 1 și {f2} în perioada de raportare 2",
-            f"pe ansamblul celor trei perioade de raportare, {label} se reduce progresiv cu {rel_str}, trecând de la {f0} (perioada 0) la {f1} (perioada 1) și {f2} (perioada 2)",
+            f"pe ansamblul celor trei perioade de raportare, {label} înregistrează o reducere progresivă de {fmt_ratio_pct(abs(rel_total)) if abs(v0) > 1e-6 else 'n/a'}, trecând de la {f0} (perioada 0) la {f1} (perioada 1) și {f2} (perioada 2)",
             f"se constată o contracție succesivă a indicatorului {label}, al cărui nivel coboară de la {f0} în perioada de raportare 0 până la {f2} în perioada de raportare 2 ({rel_str})",
             f"evoluția consemnată de {label} este una de restrângere treptată ({f0} -> {f1} -> {f2}, echivalentul unei modificări relative de {rel_str})",
         ],
+    )
+
+
+def describe_flow(vals: Sequence[float], bal: BalantaData, label: str) -> str:
+    """
+    Descrie un indicator de flux (rulaj cumulat de la începutul anului). Valorile din P1 și P2
+    sunt cumulate pe intervale de lungimi diferite, deci nu se compară direct: se prezintă
+    rulajul lunii curente (P2 - P1) și media lunară a celor două intervale.
+    """
+    v1, v2 = float(vals[1]), float(vals[2])
+    m1, m2 = bal.period.months[1], bal.period.months[2]
+    if is_nd(v1) or is_nd(v2):
+        return f"{label} nu este disponibil(ă)"
+    luna = v2 - v1
+    luna_txt = bal.period.month_name.lower() or "luna curentă"
+    if m1 <= 0:
+        return f"{label} însumează {fmt_money(v2)} lei în {luna_txt} {bal.period.year}"
+    avg1 = v1 / m1
+    if abs(avg1) < 1e-6:
+        cmp_txt = ""
+    else:
+        rel = (luna - avg1) / abs(avg1)
+        if abs(rel) < 0.02:
+            cmp_txt = f", în linie cu media lunară a perioadei precedente ({fmt_money(avg1)} lei/lună)"
+        elif rel > 0:
+            cmp_txt = f", peste media lunară a primelor {m1} luni ({fmt_money(avg1)} lei/lună, {fmt_ratio_pct(rel, plus_sign=True)})"
+        else:
+            cmp_txt = f", sub media lunară a primelor {m1} luni ({fmt_money(avg1)} lei/lună, {fmt_ratio_pct(rel, plus_sign=True)})"
+    return (
+        f"{label} cumulează {fmt_money(v1)} lei în primele {m1} luni și {fmt_money(v2)} lei în primele {m2} luni ale anului "
+        f"{bal.period.year}, din care {fmt_money(luna)} lei în {luna_txt}{cmp_txt}"
     )
 
 

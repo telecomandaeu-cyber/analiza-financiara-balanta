@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Capitolul 1: Bilanțul Contabil Sintetic (OMFP nr. 1802/2014).
-Preia soldurile din balanța de verificare pentru cele trei perioade de raportare:
-  - Perioada de raportare 0 (01.01.2026)
-  - Perioada de raportare 1 (31.08.2026)
-  - Perioada de raportare 2 (30.09.2026)
+Capitolul 1: Bilanțul Contabil Sintetic (structura OMFP nr. 1802/2014).
+
+Soldurile sunt preluate din balanța de verificare pentru cele trei momente de analiză:
+  - Perioada de raportare 0: soldurile inițiale ale exercițiului (01.01);
+  - Perioada de raportare 1: soldurile la finele lunii precedente (TS - rulajul lunii);
+  - Perioada de raportare 2: soldurile finale ale lunii de raportare.
+
+Fiecare cont din balanță este repartizat pe un rând de bilanț după natura lui
+(clasă, grupă, cont sintetic), iar conturile bifuncționale sunt împărțite pe analitice
+(ex. 4424 TVA de recuperat → creanțe, 4428 TVA neexigibilă cu sold creditor → datorii).
+Astfel nu se pierde niciun sold, iar egalitatea Activ = Pasiv este verificată explicit.
 """
 
 from __future__ import annotations
@@ -17,16 +23,18 @@ from docx import Document
 
 from core_balanta import (
     BalantaData,
+    add_callout,
     add_heading,
     add_paragraph,
     describe_trajectory,
     fmt_money,
-    fmt_pct,
     fmt_ratio_pct,
     make_table,
     pick_variant,
     safe_div,
 )
+
+TOL = 0.05  # toleranța de rotunjire (lei)
 
 
 @dataclass
@@ -49,222 +57,307 @@ class BilantRow:
 class BilantResult:
     rows_by_code: Dict[int, Tuple[float, float, float]] = field(default_factory=dict)
     table_rows: List[BilantRow] = field(default_factory=list)
+    # Agregate suplimentare folosite de capitolele următoare
+    credite_trezorerie: Tuple[float, float, float] = (0.0, 0.0, 0.0)  # 519 + descoperit 512
+    imprumuturi_asociati: Tuple[float, float, float] = (0.0, 0.0, 0.0)  # 455 (sold creditor)
+    rezerve_si_rezultate: Tuple[float, float, float] = (0.0, 0.0, 0.0)  # rezerve + rezultat reportat + rezultatul exercițiului - repartizare
+    total_activ: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    total_pasiv: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    diferente: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    note: List[str] = field(default_factory=list)
+    conturi_nemapate: List[str] = field(default_factory=list)
 
     def rd(self, code: int) -> Tuple[float, float, float]:
         return self.rows_by_code.get(code, (0.0, 0.0, 0.0))
 
+    @property
+    def echilibrat(self) -> bool:
+        return all(abs(d) <= TOL for d in self.diferente)
+
+
+# ------------------------------------------------------------------------------
+# Repartizarea conturilor pe rândurile bilanțului
+# ------------------------------------------------------------------------------
+ASSET_LINES = {1, 2, 3, 5, 6, 7, 8, 10}
+LIAB_LINES = {11, 14, 15, 17, 18, 21, 22}
+
+_NECORP = ("201", "203", "205", "206", "207", "208", "233", "234", "280", "290")
+_FIN = ("261", "262", "263", "264", "265", "266", "267", "296")
+_INV_TS = ("501", "502", "503", "505", "506", "507", "508", "590", "591", "592", "593", "595", "596", "598")
+_DISP = ("511", "512", "531", "532", "541", "542", "581")
+
+
+def _classify(code: str, nd: float) -> Tuple[str, str]:
+    """
+    Returnează (destinație, observație) pentru soldul net debitor `nd` al contului `code`.
+    Destinația este un rând de bilanț ("L<n>"), o componentă de capital ("EQ:<cheie>"),
+    "UNCLOSED" (conturi de venituri/cheltuieli neînchise) sau "IGNORE" (clasele 8–9).
+    """
+    c = code
+    c3 = c[:3]
+    cls = c[0]
+    if cls in "089":
+        return "IGNORE", ""
+    if cls in "67":
+        return "UNCLOSED", ""
+
+    if cls == "1":
+        if c3 == "101":
+            return {
+                "1011": "EQ:cap_nevarsat",
+                "1015": "EQ:cap_regie",
+                "1016": "EQ:patrimoniu_public",
+                "1017": "EQ:cap_alte",
+                "1018": "EQ:cap_alte",
+            }.get(c, "EQ:cap_varsat"), ""
+        if c3 == "104":
+            return "EQ:prime", ""
+        if c3 == "105":
+            return "EQ:rezerve_reev", ""
+        if c3 in ("106", "107", "108"):
+            return "EQ:rezerve", ""
+        if c3 == "109":
+            return "EQ:actiuni_proprii", ""
+        if c3 == "117":
+            return "EQ:reportat", ""
+        if c3 == "121":
+            return "EQ:rezultat", ""
+        if c3 == "129":
+            return "EQ:repartizare", ""
+        if c3 == "141":
+            return "EQ:castiguri", ""
+        if c3 == "149":
+            return "EQ:pierderi", ""
+        if c3 == "151":
+            return "L15", ""
+        if c[:2] == "16":
+            return "L14", "dtl"
+        return "EQ:alte", f"contul {c} (clasa 1) a fost inclus în capitalurile proprii"
+
+    if cls == "2":
+        if c.startswith("2075"):
+            return "L22", ""
+        if c.startswith("2933") or c.startswith("2903"):
+            return "L1", ""
+        if c.startswith("4094"):
+            return "L1", ""
+        if c3 in _NECORP:
+            return "L1", ""
+        if c3 in _FIN:
+            return "L3", ""
+        if c3 == "269":
+            return ("L11", "") if nd <= 0 else ("L3", "")
+        return "L2", ""
+
+    if cls == "3":
+        return "L5", ""
+
+    if cls == "4":
+        if c.startswith("4093"):
+            return "L2", ""
+        if c.startswith("4094"):
+            return "L1", ""
+        if c.startswith("4092"):
+            return ("L6", "") if nd >= 0 else ("L11", "")
+        if c3 == "409":  # 4091 sau 409 fără analitice: avansuri pentru stocuri
+            return ("L5", "") if nd >= 0 else ("L11", "")
+        if c3 == "471":
+            return ("L10", "") if nd >= 0 else ("L18", "")
+        if c3 == "472":
+            return ("L18", "") if nd <= 0 else ("L6", "")
+        if c3 == "475":
+            return "L17", ""
+        if c3 == "478":
+            return "L21", ""
+        if c3 in ("490", "491", "495", "496"):
+            return "L6", ""
+        if nd >= 0:
+            return "L6", ""
+        return "L11", ("asociati" if c3 == "455" else "")
+
+    if cls == "5":
+        if c3 in _INV_TS:
+            return "L7", ""
+        if c3 == "509":
+            return ("L11", "") if nd <= 0 else ("L7", "")
+        if c3 == "519":
+            return ("L11", "trez") if nd <= 0 else ("L6", "")
+        if c3 == "518":
+            return ("L6", "") if nd >= 0 else ("L11", "")
+        if c3 in _DISP:
+            if nd >= 0:
+                return "L8", ""
+            return "L11", ("trez" if c3 == "512" else "")
+        return ("L8", "") if nd >= 0 else ("L11", "")
+
+    return "IGNORE", f"contul {c} nu a putut fi încadrat"
+
+
+def _current_year_result(bal: BalantaData) -> Tuple[float, float, float]:
+    """Rezultatul net al exercițiului curent din Contul de profit și pierdere (import întârziat)."""
+    from sheet_02_cpp import compute_net_result  # evită importul circular
+
+    return compute_net_result(bal)
+
 
 def compute_sheet_01_bilant(bal: BalantaData) -> BilantResult:
-    """Calculează rândurile Bilanțului Contabil conform OMFP nr. 1802/2014."""
+    """Calculează rândurile Bilanțului Contabil (OMFP nr. 1802/2014) pentru P0, P1 și P2."""
     res = BilantResult()
     r: Dict[int, List[float]] = {k: [0.0, 0.0, 0.0] for k in range(1, 42)}
+    eq_keys = (
+        "cap_varsat", "cap_nevarsat", "cap_regie", "cap_alte", "patrimoniu_public", "prime", "rezerve_reev",
+        "rezerve", "actiuni_proprii", "reportat", "rezultat", "repartizare", "castiguri", "pierderi", "alte",
+    )
+    eq: Dict[str, List[float]] = {k: [0.0, 0.0, 0.0] for k in eq_keys}
+    unclosed = [0.0, 0.0, 0.0]
+    trez = [0.0, 0.0, 0.0]
+    asoc = [0.0, 0.0, 0.0]
+    notes: List[str] = []
+
+    for code in bal.leaf_accounts():
+        for p in (0, 1, 2):
+            nd = bal.net_d(code, p)
+            if abs(nd) < 0.005:
+                continue
+            dest, obs = _classify(code, nd)
+            if dest == "IGNORE":
+                if obs and obs not in notes:
+                    notes.append(obs)
+                    res.conturi_nemapate.append(code)
+                continue
+            if dest == "UNCLOSED":
+                unclosed[p] += -nd
+                continue
+            if dest.startswith("EQ:"):
+                eq[dest[3:]][p] += -nd
+                if obs and obs not in notes:
+                    notes.append(obs)
+                    res.conturi_nemapate.append(code)
+                continue
+            line = int(dest[1:])
+            amount = nd if line in ASSET_LINES else -nd
+            r[line][p] += amount
+            if obs == "trez":
+                trez[p] += -nd
+            elif obs == "asociati":
+                asoc[p] += -nd
+
+    # Rezultatul exercițiului: soldul 121 + conturile de venituri/cheltuieli neînchise.
+    # Pentru P1 și P2, rezultatul curent se ia din CPP; eventuala diferență față de soldul
+    # contului 121 (de regulă rezultatul exercițiului precedent încă nerepartizat) se
+    # prezintă la rezultatul reportat.
+    rn_cpp = _current_year_result(bal)
+    for p in (0, 1, 2):
+        total_rez = eq["rezultat"][p] + unclosed[p]
+        if p > 0 and abs(unclosed[p]) > TOL:
+            notes.append(
+                f"În perioada de raportare {p}, conturile de venituri și cheltuieli nu erau închise "
+                f"(rezultat neînchis de {fmt_money(unclosed[p])} lei) și au fost incluse în rezultatul exercițiului."
+            )
+        if p > 0 and abs(total_rez - rn_cpp[p]) > TOL:
+            dif = total_rez - rn_cpp[p]
+            eq["reportat"][p] += dif
+            total_rez = rn_cpp[p]
+            notes.append(
+                f"În perioada de raportare {p}, soldul contului 121 ({fmt_money(eq['rezultat'][p] + unclosed[p])} lei) diferă de "
+                f"rezultatul net din CPP ({fmt_money(rn_cpp[p])} lei); diferența de {fmt_money(dif)} lei "
+                f"(rezultat al exercițiului precedent nerepartizat) a fost prezentată la rezultatul reportat."
+            )
+        eq["rezultat"][p] = total_rez
 
     for p in (0, 1, 2):
-        # A. ACTIVE IMOBILIZATE
-        imob_necorp_brut = sum(bal.sold_d(c, p) for c in ("201", "203", "205", "2071", "208", "233", "234"))
-        amort_necorp = sum(bal.sold_c(c, p) for c in ("280", "290", "2933"))
-        r[1][p] = round(imob_necorp_brut - amort_necorp, 2)
+        r[4][p] = r[1][p] + r[2][p] + r[3][p]
+        r[9][p] = r[5][p] + r[6][p] + r[7][p] + r[8][p]
+        r[19][p] = r[18][p]  # veniturile în avans (472) se reiau, de regulă, în mai puțin de un an
+        r[20][p] = r[17][p] + r[21][p] + r[22][p]
+        r[16][p] = r[17][p] + r[18][p] + r[21][p] + r[22][p]
+        r[12][p] = r[9][p] + r[10][p] - r[11][p] - r[19][p]
+        r[13][p] = r[4][p] + r[12][p]
 
-        imob_corp_brut = sum(bal.sold_d(c, p) for c in ("211", "212", "213", "214", "223", "224", "231", "232"))
-        amort_corp = sum(bal.sold_c(c, p) for c in ("281", "291", "2931"))
-        r[2][p] = round(imob_corp_brut - amort_corp, 2)
-
-        imob_fin_brut = sum(bal.sold_d(c, p) for c in ("261", "263", "265", "267"))
-        depr_fin = bal.sold_c("296", p)
-        r[3][p] = round(imob_fin_brut - depr_fin, 2)
-
-        r[4][p] = round(r[1][p] + r[2][p] + r[3][p], 2)
-
-        # B. ACTIVE CIRCULANTE
-        stoc_brut = sum(
-            bal.sold_d(c, p)
-            for c in ("301", "302", "303", "321", "322", "323", "331", "332", "341", "345", "346", "351", "361", "371", "381")
+        r[24][p] = eq["cap_varsat"][p]
+        r[25][p] = eq["cap_nevarsat"][p]
+        r[26][p] = eq["cap_regie"][p]
+        r[27][p] = eq["cap_alte"][p] + eq["alte"][p]
+        r[23][p] = r[24][p] + r[25][p] + r[26][p] + r[27][p]
+        r[28][p] = eq["prime"][p]
+        r[29][p] = eq["rezerve_reev"][p]
+        r[30][p] = eq["rezerve"][p]
+        r[31][p] = -eq["actiuni_proprii"][p]
+        r[32][p] = eq["castiguri"][p]
+        r[33][p] = -eq["pierderi"][p]
+        rep = eq["reportat"][p]
+        r[34][p], r[35][p] = (rep, 0.0) if rep >= 0 else (0.0, -rep)
+        rez = eq["rezultat"][p]
+        r[36][p], r[37][p] = (rez, 0.0) if rez >= 0 else (0.0, -rez)
+        r[38][p] = -eq["repartizare"][p]
+        r[39][p] = (
+            r[23][p] + r[28][p] + r[29][p] + r[30][p] - r[31][p] + r[32][p] - r[33][p]
+            + r[34][p] - r[35][p] + r[36][p] - r[37][p] - r[38][p]
         )
-        dif_pret = sum(bal.net_d(c, p) for c in ("308", "348", "368", "378", "388"))
-        depr_stoc = sum(bal.sold_c(c, p) for c in ("391", "392", "393", "394", "395", "396", "397", "398"))
-        furn_deb_stoc = bal.pos_d("409", p)
-        r[5][p] = round(stoc_brut + dif_pret - depr_stoc + furn_deb_stoc, 2)
+        r[40][p] = eq["patrimoniu_public"][p]
+        r[41][p] = r[39][p] + r[40][p]
 
-        creante_fixe = (
-            bal.pos_d("411", p)
-            + bal.pos_d("413", p)
-            + bal.pos_d("418", p)
-            + bal.pos_d("425", p)
-            + bal.pos_d("428", p)
-            + bal.pos_d("431", p)
-            + bal.pos_d("436", p)
-            + bal.pos_d("437", p)
-            + bal.pos_d("438", p)
-            + bal.pos_d("441", p)
-            + bal.pos_d("4424", p)
-            + bal.pos_d("4426", p)
-            + bal.pos_d("444", p)
-            + bal.pos_d("445", p)
-            + bal.pos_d("446", p)
-            + bal.pos_d("447", p)
-            + bal.pos_d("448", p)
-            + bal.pos_d("451", p)
-            + bal.pos_d("453", p)
-            + bal.pos_d("456", p)
-            + bal.pos_d("458", p)
-            + bal.pos_d("461", p)
-            + bal.pos_d("463", p)
-            + bal.pos_d("473", p)
-            + bal.pos_d("518", p)
-        )
-        ajust_creante = sum(bal.sold_c(c, p) for c in ("491", "495", "496"))
-        r[6][p] = round(creante_fixe - ajust_creante, 2)
+    for code in r:
+        r[code] = [round(v, 2) for v in r[code]]
+        res.rows_by_code[code] = (r[code][0], r[code][1], r[code][2])
 
-        inv_ts = sum(bal.pos_d(c, p) for c in ("501", "505", "506", "508")) - sum(
-            bal.sold_c(c, p) for c in ("591", "595", "596", "598")
-        )
-        r[7][p] = round(inv_ts, 2)
-
-        disp = sum(bal.pos_d(c, p) for c in ("512", "531", "532", "541", "542", "581"))
-        r[8][p] = round(disp, 2)
-
-        r[9][p] = round(r[5][p] + r[6][p] + r[7][p] + r[8][p], 2)
-
-        # C. CHELTUIELI ÎN AVANS
-        r[10][p] = round(bal.pos_d("471", p), 2)
-
-        # D. DATORII SUB UN AN
-        dat_scurte = (
-            bal.pos_c("269", p)
-            + bal.pos_c("401", p)
-            + bal.pos_c("403", p)
-            + bal.pos_c("404", p)
-            + bal.pos_c("405", p)
-            + bal.pos_c("408", p)
-            + bal.pos_c("419", p)
-            + bal.pos_c("421", p)
-            + bal.pos_c("423", p)
-            + bal.pos_c("424", p)
-            + bal.pos_c("426", p)
-            + bal.pos_c("427", p)
-            + bal.pos_c("428", p)
-            + bal.pos_c("431", p)
-            + bal.pos_c("436", p)
-            + bal.pos_c("437", p)
-            + bal.pos_c("438", p)
-            + bal.pos_c("441", p)
-            + bal.pos_c("4423", p)
-            + bal.pos_c("4428", p)
-            + bal.pos_c("444", p)
-            + bal.pos_c("446", p)
-            + bal.pos_c("447", p)
-            + bal.pos_c("448", p)
-            + bal.pos_c("451", p)
-            + bal.pos_c("453", p)
-            + bal.pos_c("455", p)
-            + bal.pos_c("456", p)
-            + bal.pos_c("457", p)
-            + bal.pos_c("458", p)
-            + bal.pos_c("462", p)
-            + bal.pos_c("473", p)
-            + bal.pos_c("509", p)
-            + bal.pos_c("518", p)
-            + bal.pos_c("519", p)
-        )
-        r[11][p] = round(dat_scurte, 2)
-
-        # I. VENITURI ÎN AVANS
-        r[17][p] = round(bal.pos_c("475", p), 2)
-        r[18][p] = round(bal.pos_c("472", p), 2)
-        r[19][p] = r[18][p]
-        r[20][p] = 0.0
-        r[21][p] = round(bal.pos_c("478", p), 2)
-        r[22][p] = round(bal.pos_c("2075", p), 2)
-        r[16][p] = round(r[17][p] + r[18][p] + r[21][p] + r[22][p], 2)
-
-        # E. ACTIVE CIRCULANTE NETE / DATORII CURENTE NETE
-        r[12][p] = round(r[9][p] + r[10][p] - r[11][p] - r[19][p], 2)
-
-        # F. TOTAL ACTIVE MINUS DATORII CURENTE
-        r[13][p] = round(r[4][p] + r[12][p], 2)
-
-        # G. DATORII PESTE UN AN
-        dat_lungi = (
-            bal.pos_c("161", p)
-            + bal.pos_c("162", p)
-            + bal.pos_c("166", p)
-            + bal.pos_c("167", p)
-            + bal.pos_c("168", p)
-            - bal.pos_d("169", p)
-        )
-        r[14][p] = round(dat_lungi, 2)
-
-        # H. PROVIZIOANE
-        r[15][p] = round(bal.pos_c("151", p), 2)
-
-        # J. CAPITAL ȘI REZERVE
-        r[24][p] = round(bal.pos_c("1012", p), 2)
-        r[25][p] = round(bal.pos_c("1011", p), 2)
-        r[26][p] = round(bal.pos_c("1015", p), 2)
-        r[27][p] = round(bal.pos_c("1018", p), 2)
-        r[23][p] = round(r[24][p] + r[25][p] + r[26][p] + r[27][p], 2)
-        r[28][p] = round(bal.pos_c("104", p), 2)
-        r[29][p] = round(bal.pos_c("105", p), 2)
-        r[30][p] = round(bal.pos_c("106", p), 2)
-        r[31][p] = round(bal.pos_d("109", p), 2)
-        r[32][p] = round(bal.pos_c("141", p), 2)
-        r[33][p] = round(bal.pos_d("149", p), 2)
-
-        r[34][p] = round(bal.pos_c("117", p), 2)
-        r[35][p] = round(bal.pos_d("117", p), 2)
-
-        r[36][p] = round(bal.pos_c("121", p), 2)
-        r[37][p] = round(bal.pos_d("121", p), 2)
-
-        r[38][p] = round(bal.pos_d("129", p), 2)
-
-        r[39][p] = round(
-            r[23][p]
-            + r[28][p]
-            + r[29][p]
-            + r[30][p]
-            - r[31][p]
-            + r[32][p]
-            - r[33][p]
-            + r[34][p]
-            - r[35][p]
-            + r[36][p]
-            - r[37][p]
-            - r[38][p],
-            2,
-        )
-        r[40][p] = round(bal.pos_c("1016", p), 2)
-        r[41][p] = round(r[39][p] + r[40][p], 2)
-
-    for code, vals in r.items():
-        res.rows_by_code[code] = (vals[0], vals[1], vals[2])
+    ta = tuple(round(r[4][p] + r[9][p] + r[10][p], 2) for p in range(3))
+    tp = tuple(round(r[11][p] + r[14][p] + r[15][p] + r[16][p] + r[41][p], 2) for p in range(3))
+    res.total_activ = ta
+    res.total_pasiv = tp
+    res.diferente = tuple(round(ta[p] - tp[p], 2) for p in range(3))
+    res.credite_trezorerie = tuple(round(v, 2) for v in trez)
+    res.imprumuturi_asociati = tuple(round(v, 2) for v in asoc)
+    res.rezerve_si_rezultate = tuple(
+        round(r[30][p] + r[34][p] - r[35][p] + r[36][p] - r[37][p] - r[38][p], 2) for p in range(3)
+    )
+    for p in range(3):
+        if abs(res.diferente[p]) > TOL:
+            notes.append(
+                f"ATENȚIE: în perioada de raportare {p} totalul activului diferă de totalul pasivului cu "
+                f"{fmt_money(res.diferente[p])} lei — verificați balanța și conturile nemapate."
+            )
+    res.note = notes + list(bal.warnings)
 
     definitions = [
-        ("A.", "I. Imobilizări necorporale", "(ct. 201..208 - 280)", 1, False),
-        ("", "II. Imobilizări corporale", "(ct. 211..231 - 281)", 2, False),
+        ("A.", "I. Imobilizări necorporale", "(ct. 201..208, 233, 234 - 280 - 290 - 2933)", 1, False),
+        ("", "II. Imobilizări corporale", "(ct. 211..235 - 281 - 291 - 2931)", 2, False),
+        ("", "III. Imobilizări financiare", "(ct. 261..267 - 296)", 3, False),
         ("", "ACTIVE IMOBILIZATE — TOTAL", "(rd. 01 + 02 + 03)", 4, True),
-        ("B.", "I. Stocuri (materii prime, produse, mărfuri, avansuri)", "(ct. 301..381 + 4091)", 5, False),
-        ("", "II. Creanțe comerciale, fiscale și diverse", "(ct. 411+425+438+4424+445+461+463)", 6, False),
-        ("", "IV. Casa și conturi la bănci", "(ct. 512+531+542)", 8, False),
+        ("B.", "I. Stocuri", "(ct. 301..381 ± 308..388 - 39x + 4091)", 5, False),
+        ("", "II. Creanțe", "(solduri debitoare clasa 4, ct. 5187 - 49x)", 6, False),
+        ("", "III. Investiții pe termen scurt", "(ct. 501..508 - 59x)", 7, False),
+        ("", "IV. Casa și conturi la bănci", "(ct. 511, 512, 531, 532, 541, 542, 581)", 8, False),
         ("", "ACTIVE CIRCULANTE — TOTAL", "(rd. 05 + 06 + 07 + 08)", 9, True),
         ("C.", "Cheltuieli în avans", "(ct. 471)", 10, False),
-        ("D.", "DATORII CE TREBUIE PLĂTITE ÎNTR-O PERIOADĂ DE PÂNĂ LA UN AN", "(ct. 401+419+421+431+436+441+4423+444+455+457+462)", 11, True),
+        ("D.", "Datorii ce trebuie plătite într-o perioadă de până la un an", "(solduri creditoare clasa 4, ct. 269, 509, 519, 5186)", 11, True),
         ("E.", "Active circulante nete / Datorii curente nete", "(rd. 09 + 10 - 11 - 19)", 12, False),
         ("F.", "TOTAL ACTIVE MINUS DATORII CURENTE", "(rd. 04 + 12)", 13, True),
-        ("G.", "DATORII CE TREBUIE PLĂTITE ÎNTR-O PERIOADĂ MAI MARE DE UN AN", "(ct. 161..168)", 14, True),
-        ("I.", "VENITURI ÎN AVANS — TOTAL", "(rd. 17 + 18)", 16, True),
+        ("G.", "Datorii ce trebuie plătite într-o perioadă mai mare de un an", "(ct. 161..168 - 169)", 14, True),
+        ("H.", "Provizioane", "(ct. 151)", 15, False),
+        ("I.", "Venituri în avans — total", "(ct. 472 + 475 + 478 + 2075)", 16, True),
         ("J.", "I. Capital subscris vărsat", "(ct. 1012)", 24, False),
+        ("", "   Capital subscris nevărsat", "(ct. 1011)", 25, False),
+        ("", "II. Prime de capital", "(ct. 104)", 28, False),
+        ("", "III. Rezerve din reevaluare", "(ct. 105)", 29, False),
         ("", "IV. Rezerve", "(ct. 106)", 30, False),
-        ("", "V. Profitul sau pierderea reportat(ă) — Sold C", "(ct. 117)", 34, False),
-        ("", "VI. Profitul exercițiului financiar — Sold C", "(ct. 121)", 36, False),
-        ("", "Repartizarea profitului", "(ct. 129)", 38, False),
-        ("", "CAPITALURI PROPRII — TOTAL", "(rd. 23 + 30 + 34 + 36 - 38)", 39, True),
+        ("", "   Acțiuni proprii", "(ct. 109)", 31, False),
+        ("", "V. Profitul reportat — sold C", "(ct. 117)", 34, False),
+        ("", "   Pierderea reportată — sold D", "(ct. 117)", 35, False),
+        ("", "VI. Profitul perioadei — sold C", "(ct. 121)", 36, False),
+        ("", "   Pierderea perioadei — sold D", "(ct. 121)", 37, False),
+        ("", "   Repartizarea profitului", "(ct. 129)", 38, False),
+        ("", "CAPITALURI PROPRII — TOTAL", "(rd. 23 + 28 + 29 + 30 - 31 + 32 - 33 ± 34/35 ± 36/37 - 38)", 39, True),
+        ("", "Patrimoniul public", "(ct. 1016)", 40, False),
+        ("", "CAPITALURI — TOTAL", "(rd. 39 + 40)", 41, True),
     ]
 
     for grp, den, form_str, code, is_tot in definitions:
         v0, v1, v2 = res.rd(code)
         if not is_tot and abs(v0) < 1e-6 and abs(v1) < 1e-6 and abs(v2) < 1e-6:
             continue
+        if code == 41 and all(abs(v) < 1e-6 for v in res.rd(40)):
+            continue  # identic cu rd. 39
         res.table_rows.append(
             BilantRow(
                 grupa=grp,
@@ -277,6 +370,8 @@ def compute_sheet_01_bilant(bal: BalantaData) -> BilantResult:
                 is_total=is_tot,
             )
         )
+    for lbl, vals in (("TOTAL ACTIV (rd. 04 + 09 + 10)", ta), ("TOTAL PASIV (rd. 11 + 14 + 15 + 16 + 41)", tp)):
+        res.table_rows.append(BilantRow("", lbl, "", "—", vals[0], vals[1], vals[2], True))
 
     return res
 
@@ -285,28 +380,15 @@ def render_sheet_01_bilant(doc: Document, bal: BalantaData, res: BilantResult) -
     """Generează secțiunea Bilanțului Contabil Sintetic în documentul Word."""
     add_heading(doc, "1. Bilanțul Contabil Sintetic (OMFP nr. 1802/2014)", level=1)
 
-    headers = [
-        "Grupa",
-        "Element patrimonial și corespondență contabilă",
-        "Rd.",
-        "Perioada de raportare 0 (lei)",
-        "Perioada de raportare 1 (lei)",
-        "Perioada de raportare 2 (lei)",
-        "Δ (P2 - P0) (lei)",
-    ]
+    c0, c1, c2 = bal.col_labels
+    headers = ["Grupa", "Element patrimonial și corespondență contabilă", "Rd.", c0, c1, c2, "Δ (P2 - P0)"]
     rows_data = []
     total_indices = []
     for idx, r in enumerate(res.table_rows):
         if r.is_total:
             total_indices.append(idx)
         rows_data.append([
-            r.grupa,
-            r.denumire,
-            r.rand,
-            fmt_money(r.v0),
-            fmt_money(r.v1),
-            fmt_money(r.v2),
-            fmt_money(r.v2 - r.v0),
+            r.grupa, r.denumire, r.rand, fmt_money(r.v0), fmt_money(r.v1), fmt_money(r.v2), fmt_money(r.v2 - r.v0),
         ])
 
     make_table(
@@ -318,12 +400,24 @@ def render_sheet_01_bilant(doc: Document, bal: BalantaData, res: BilantResult) -
         font_size=7.8,
     )
 
+    if res.echilibrat:
+        verif = (
+            "Activul total este egal cu pasivul total în toate cele trei perioade "
+            f"({fmt_money(res.total_activ[0])} lei, {fmt_money(res.total_activ[1])} lei și {fmt_money(res.total_activ[2])} lei); "
+            "toate soldurile din balanță au fost repartizate pe rândurile bilanțului."
+        )
+    else:
+        verif = "Bilanțul NU se închide în toate perioadele: " + "; ".join(
+            f"P{p}: diferență {fmt_money(res.diferente[p])} lei" for p in range(3)
+        ) + "."
+    extra = (" " + " ".join(res.note)) if res.note else ""
+    add_callout(doc, verif + extra, title="Verificarea bilanțului")
+
     ai0, ai1, ai2 = res.rd(4)
-    ac0, ac1, ac2 = res.rd(9)
-    ca0, ca1, ca2 = res.rd(10)
-    ta0, ta1, ta2 = ai0 + ac0 + ca0, ai1 + ac1 + ca1, ai2 + ac2 + ca2
-    dts0, dts1, dts2 = res.rd(11)
-    dtl0, dtl1, dtl2 = res.rd(14)
+    ac2 = res.rd(9)[2]
+    ta0, ta1, ta2 = res.total_activ
+    dts2 = res.rd(11)[2]
+    dtl2 = res.rd(14)[2]
     cp0, cp1, cp2 = res.rd(39)
     disp2 = res.rd(8)[2]
     stoc2 = res.rd(5)[2]
@@ -338,43 +432,31 @@ def render_sheet_01_bilant(doc: Document, bal: BalantaData, res: BilantResult) -
             bal,
             "s01_prof_ai",
             [
-                f"Structura patrimonială din perioada de raportare 2 este preponderent imobilizată (activele fixe nete de {fmt_money(ai2)} lei dețin {fmt_ratio_pct(pond_ai2)} din activ), reflectând o bază tehnică și investițională consistentă, completată de active circulante de {fmt_money(ac2)} lei.",
+                f"Structura patrimonială din perioada de raportare 2 este preponderent imobilizată (activele fixe nete de {fmt_money(ai2)} lei dețin {fmt_ratio_pct(pond_ai2)} din activ), completată de active circulante de {fmt_money(ac2)} lei.",
                 f"Arhitectura activului în perioada de raportare 2 evidențiază dominanța imobilizărilor nete ({fmt_money(ai2)} lei, respectiv {fmt_ratio_pct(pond_ai2)} din patrimoniu), în timp ce activele curente însumează {fmt_money(ac2)} lei (din care trezorerie {fmt_money(disp2)} lei).",
-                f"Alocarea plasamentelor patrimoniale la finele perioadei de raportare 2 relevă o intensitate ridicată a capitalului fix ({fmt_money(ai2)} lei, {fmt_ratio_pct(pond_ai2)} din total), secondată de active circulante de {fmt_money(ac2)} lei.",
             ],
         )
     else:
-        dom_ac = "disponibilitățile bănești" if disp2 >= max(stoc2, creante2) else ("creanțele comerciale și diverse" if creante2 >= stoc2 else "stocurile operaționale")
-        profil_activ = pick_variant(
-            bal,
-            "s01_prof_ac",
-            [
-                f"Configurația activului în perioada de raportare 2 este orientată spre ciclul operațional curent: activele circulante ({fmt_money(ac2)} lei, pilonul principal fiind {dom_ac}) dețin {fmt_ratio_pct(1.0 - pond_ai2)} din patrimoniu, iar imobilizările nete însumează {fmt_money(ai2)} lei ({fmt_ratio_pct(pond_ai2)}).",
-                f"În perioada de raportare 2, mobilitatea patrimonială este ridicată, activele circulante ({fmt_money(ac2)} lei, susținute prioritar de {dom_ac}) devansând activele imobilizate nete ({fmt_money(ai2)} lei, respectiv {fmt_ratio_pct(pond_ai2)} din activ).",
-                f"Ponderea majoritară în activul perioadei de raportare 2 revine elementelor circulante ({fmt_money(ac2)} lei, dominate de {dom_ac}), în timp ce baza imobilizată netă se cifrează la {fmt_money(ai2)} lei ({fmt_ratio_pct(pond_ai2)} din total).",
-            ],
+        dom_ac = "disponibilitățile bănești" if disp2 >= max(stoc2, creante2) else ("creanțele" if creante2 >= stoc2 else "stocurile")
+        profil_activ = (
+            f"În perioada de raportare 2, activele circulante ({fmt_money(ac2)} lei, componenta principală fiind {dom_ac}) "
+            f"dețin {fmt_ratio_pct(safe_div(ac2, ta2))} din activ, iar imobilizările nete însumează {fmt_money(ai2)} lei ({fmt_ratio_pct(pond_ai2)})."
         )
 
     if cp2 < 0:
-        pasiv_msg = f"Pe latura resurselor, deși {traj_cp}, valoarea negativă a capitalurilor proprii indică un deficit de acoperire patrimonială, finanțarea fiind asigurată din datorii curente ({fmt_money(dts2)} lei) și datorii pe termen lung ({fmt_money(dtl2)} lei)."
+        pasiv_msg = (
+            f"Pe latura resurselor, {traj_cp}; valoarea negativă a capitalurilor proprii indică un activ net negativ, "
+            f"finanțarea fiind asigurată integral din datorii curente ({fmt_money(dts2)} lei) și pe termen lung ({fmt_money(dtl2)} lei)."
+        )
     elif dtl2 > 0:
-        pasiv_msg = pick_variant(
-            bal,
-            "s01_pas_dtl",
-            [
-                f"În planul finanțării, {traj_cp}, iar obligațiile față de terți în perioada de raportare 2 se împart între datorii curente exigibile sub un an ({fmt_money(dts2)} lei) și împrumuturi pe termen lung ({fmt_money(dtl2)} lei).",
-                f"Sub aspectul surselor de finanțare, {traj_cp}; complementar, datoriile pe termen scurt se situează la {fmt_money(dts2)} lei în perioada de raportare 2, iar datoriile peste un an la {fmt_money(dtl2)} lei.",
-                f"Pe partea de pasiv, {traj_cp}, resursele împrumutate însumând în perioada de raportare 2 datorii curente de {fmt_money(dts2)} lei și datorii pe termen lung de {fmt_money(dtl2)} lei.",
-            ],
+        pasiv_msg = (
+            f"În planul finanțării, {traj_cp}, iar obligațiile față de terți în perioada de raportare 2 se împart între "
+            f"datorii exigibile sub un an ({fmt_money(dts2)} lei) și datorii peste un an ({fmt_money(dtl2)} lei)."
         )
     else:
-        pasiv_msg = pick_variant(
-            bal,
-            "s01_pas_nodtl",
-            [
-                f"În planul resurselor, {traj_cp}; societatea nu înregistrează datorii pe termen lung în perioada de raportare 2 (0,00 lei), obligațiile față de terți fiind integral pe termen scurt ({fmt_money(dts2)} lei).",
-                f"Sub aspectul structurii pasivului, {traj_cp}, în timp ce datoriile pe termen lung sunt nule în perioada de raportare 2, iar angajamentele curente sub un an totalizează {fmt_money(dts2)} lei.",
-            ],
+        pasiv_msg = (
+            f"În planul resurselor, {traj_cp}; societatea nu are datorii peste un an în perioada de raportare 2, "
+            f"obligațiile față de terți fiind integral pe termen scurt ({fmt_money(dts2)} lei)."
         )
 
-    add_paragraph(doc, f"Diagnostic bilanțier: În conformitate cu principiul dublei reprezentări, {traj_ta}. {profil_activ} {pasiv_msg}")
+    add_paragraph(doc, f"Diagnostic bilanțier: {traj_ta[0].upper() + traj_ta[1:]}. {profil_activ} {pasiv_msg}")

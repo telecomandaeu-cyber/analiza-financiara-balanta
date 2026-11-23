@@ -13,6 +13,7 @@ from typing import List, Tuple
 from docx import Document
 
 from core_balanta import (
+    fmt_pp,
     BalantaData,
     add_heading,
     add_paragraph,
@@ -137,8 +138,8 @@ def render_sheet_06_ratele_pasivului(doc: Document, bal: BalantaData, res: RateP
             fmt_ratio_pct(b.rate_vals[0]),
             fmt_ratio_pct(b.rate_vals[1]),
             fmt_ratio_pct(b.rate_vals[2]),
-            fmt_ratio_pct(d[0], plus_sign=True),
-            fmt_ratio_pct(d[1], plus_sign=True),
+            fmt_pp(d[0]),
+            fmt_pp(d[1]),
             fmt_ratio_pct(i[1]),
         ])
 

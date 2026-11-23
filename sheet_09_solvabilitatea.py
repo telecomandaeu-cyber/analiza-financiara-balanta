@@ -14,6 +14,7 @@ from typing import Tuple
 from docx import Document
 
 from core_balanta import (
+    fmt_pp,
     BalantaData,
     add_heading,
     add_paragraph,
@@ -53,8 +54,10 @@ def compute_sheet_09_solvabilitatea(
     for p, lbl in enumerate(("perioada de raportare 0", "perioada de raportare 1", "perioada de raportare 2")):
         if sg[p] >= 1.66:
             norma.append(f"În {lbl}, solvabilitatea generală ({fmt_ratio_pct(sg[p])}) depășește pragul minim de 166%.")
+        elif sg[p] >= 1.0:
+            norma.append(f"În {lbl}, solvabilitatea generală ({fmt_ratio_pct(sg[p])}) este sub pragul de 166%, dar peste 100%.")
         else:
-            norma.append(f"În {lbl}, solvabilitatea generală ({fmt_ratio_pct(sg[p])}) este sub pragul de 166% (însă peste 100%).")
+            norma.append(f"În {lbl}, solvabilitatea generală ({fmt_ratio_pct(sg[p])}) este sub 100%: activele nu acoperă datoriile.")
 
     return SolvabilitateResult(
         solv_generala=sg,
@@ -96,7 +99,7 @@ def render_sheet_09_solvabilitatea(
         ["1. Activ total patrimonial", "lei", fmt_money(ta[0]), fmt_money(ta[1]), fmt_money(ta[2]), fmt_money(d_ta[0]), fmt_money(d_ta[1]), fmt_ratio_pct(i_ta[1])],
         ["2. Datorii totale (DTL + DTS)", "lei", fmt_money(dt[0]), fmt_money(dt[1]), fmt_money(dt[2]), fmt_money(d_dt[0]), fmt_money(d_dt[1]), fmt_ratio_pct(i_dt[1])],
         ["3. Solvabilitatea generală (coeficient)", "> 1,66", fmt_num(sg[0], 4), fmt_num(sg[1], 4), fmt_num(sg[2], 4), fmt_num(d_sg[0], 4), fmt_num(d_sg[1], 4), fmt_ratio_pct(i_sg[1])],
-        ["4. Solvabilitatea generală (în procente)", "> 166%", fmt_ratio_pct(sg[0]), fmt_ratio_pct(sg[1]), fmt_ratio_pct(sg[2]), fmt_ratio_pct(d_sg[0], plus_sign=True), fmt_ratio_pct(d_sg[1], plus_sign=True), fmt_ratio_pct(i_sg[1])],
+        ["4. Solvabilitatea generală (în procente)", "> 166%", fmt_ratio_pct(sg[0]), fmt_ratio_pct(sg[1]), fmt_ratio_pct(sg[2]), fmt_pp(d_sg[0]), fmt_pp(d_sg[1]), fmt_ratio_pct(i_sg[1])],
     ]
 
     make_table(

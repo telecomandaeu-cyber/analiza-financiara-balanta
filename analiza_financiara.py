@@ -48,6 +48,14 @@ from core_balanta import (
     set_table_borders,
     set_table_full_width,
 )
+from core_balanta import set_narator
+from narativ import (
+    Narator,
+    observatii_bilant,
+    observatii_cpp,
+    observatii_datorii,
+    observatii_trezorerie,
+)
 from sheet_01_bilant import compute_sheet_01_bilant, render_sheet_01_bilant
 from sheet_02_cpp import compute_sheet_02_cpp, render_sheet_02_cpp
 from sheet_03_bilant_financiar import compute_sheet_03_bilant_financiar, render_sheet_03_bilant_financiar
@@ -460,6 +468,12 @@ def generate_full_financial_report(
     # ETAPA 2: CONSTRUIREA DOCUMENTULUI WORD (.DOCX) COMPACT ȘI SINTETIC
     doc = Document()
     configure_document(doc, bal)
+    nar = Narator(bal)
+    set_narator(nar)  # parafrazarea deterministă, specifică acestei balanțe
+
+    def _obs(text: Optional[str]) -> None:
+        if text:
+            add_paragraph(doc, text)
 
     _render_cover_and_intro(
         doc, bal, s03_bf, s05_sf, s06_rp, s07_ef, s08_liq, s09_solv, s13_sig, s14_caf, s16_lev, s17_risc, s19_prof,
@@ -474,7 +488,9 @@ def generate_full_financial_report(
         page_break=False,
     )
     render_sheet_01_bilant(doc, bal, s01_bilant)
+    _obs(observatii_bilant(nar, fmt_money))
     render_sheet_02_cpp(doc, bal, s02_cpp)
+    _obs(observatii_cpp(nar, fmt_money, fmt_ratio_pct))
     render_sheet_03_bilant_financiar(doc, bal, s01_bilant, s03_bf)
 
     add_part_banner(
@@ -496,7 +512,9 @@ def generate_full_financial_report(
         page_break=False,
     )
     render_sheet_07_echilibrul_financiar(doc, bal, s03_bf, s05_sf, s07_ef)
+    _obs(observatii_datorii(nar, fmt_money, fmt_ratio_pct))
     render_sheet_08_lichiditatea(doc, bal, s03_bf, s01_bilant, s08_liq)
+    _obs(observatii_trezorerie(nar, fmt_money, fmt_ratio_pct))
     render_sheet_09_solvabilitatea(doc, bal, s03_bf, s05_sf, s01_bilant, s09_solv)
     render_sheet_10_bilant_simplificat(doc, bal, s10_bs)
     render_sheet_11_echilibru_static(doc, bal, s11_es)
@@ -537,6 +555,7 @@ def generate_full_financial_report(
         doc, bal, s03_bf, s05_sf, s06_rp, s07_ef, s08_liq, s09_solv,
         s13_sig, s14_caf, s15_cap, s16_lev, s17_risc, s18_gest, s19_prof, s20_corr
     )
+    set_narator(None)
 
     if output_docx_path is None:
         utilitare_dir = ANALIZA_DIR.parent

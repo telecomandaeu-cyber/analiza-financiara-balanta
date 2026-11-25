@@ -7,16 +7,13 @@ conținut al raportului financiar (Tabloul de Bord KPI, Sinteza pe Clase și toa
 21 de Capitole cu tabelele și interpretările lor complete) și permite descărcarea
 documentului în format Microsoft Word (.docx).
 """
-
 from __future__ import annotations
-
 import html
 import shutil
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict
-
 import streamlit as st
 
 CURRENT_DIR = Path(__file__).resolve().parent

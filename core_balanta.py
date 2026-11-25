@@ -630,6 +630,19 @@ def fmt_num(v: Optional[NumberLike], decimals: int = 4) -> str:
 # ==============================================================================
 # MOTOR DE STILIZARE WORD (.DOCX) — COMPACT, SINTETIC ȘI LIZIBIL (10–15 PAGINI)
 # ==============================================================================
+_NARATOR = None
+
+
+def set_narator(narator) -> None:
+    """Activează (sau dezactivează cu None) parafrazarea textelor analitice pentru raportul curent."""
+    global _NARATOR
+    _NARATOR = narator
+
+
+def _narativ(text: str) -> str:
+    return _NARATOR.paraphrase(text) if _NARATOR is not None else text
+
+
 def set_cell_shading(cell, fill: str = COLOR_NAVY) -> None:
     tc_pr = cell._tc.get_or_add_tcPr()
     for existing in tc_pr.findall(qn("w:shd")):
@@ -727,7 +740,7 @@ def add_paragraph(
     p.paragraph_format.space_before = Pt(space_before)
     p.paragraph_format.space_after = Pt(space_after)
     p.paragraph_format.line_spacing = line_spacing
-    run = p.add_run(text)
+    run = p.add_run(_narativ(text))
     set_run_font(run, size=size, bold=bold, italic=italic, color=color)
     return p
 
@@ -741,7 +754,7 @@ def add_bullet(doc: Document, lead_bold: str, text: str, size: float = 9.0) -> N
     p.paragraph_format.line_spacing = 1.10
     r1 = p.add_run(f"▪ {lead_bold}: ")
     set_run_font(r1, size=size, bold=True, color=COLOR_NAVY)
-    r2 = p.add_run(text)
+    r2 = p.add_run(_narativ(text))
     set_run_font(r2, size=size, bold=False, color=COLOR_SLATE_TEXT)
 
 
@@ -830,7 +843,7 @@ def add_callout(doc: Document, text: str, title: Optional[str] = None, border_co
     if title:
         r_title = p.add_run(f" Sinteză — {title}: ")
         set_run_font(r_title, size=8.8, bold=True, color=COLOR_NAVY)
-    r_body = p.add_run(text)
+    r_body = p.add_run(_narativ(text))
     set_run_font(r_body, size=8.7, italic=False, color=COLOR_SLATE_TEXT)
 
 
@@ -1060,13 +1073,18 @@ def company_seed(bal: BalantaData, salt: str = "") -> int:
     și sumele din balanța de verificare, astfel încât două balanțe diferite
     să genereze formulări și structuri sintactice distincte.
     """
-    t = bal.total_row
-    sig = (
-        f"{bal.cif}|{bal.denumire}|{bal.perioada}|"
-        f"{t.sid if t else 0:.2f}|{t.rld if t else 0:.2f}|"
-        f"{t.tsd if t else 0:.2f}|{t.sfd if t else 0:.2f}|{salt}"
-    )
-    digest = hashlib.sha256(sig.encode("utf-8")).hexdigest()
+    fp = getattr(bal, "_amprenta", None)
+    if fp is None:
+        h = hashlib.sha256(f"{bal.cif}|{bal.denumire}|{bal.perioada}".encode("utf-8"))
+        for sym in sorted(bal.accounts):
+            a = bal.accounts[sym]
+            h.update(f"{sym}:{a.sid:.2f}:{a.sic:.2f}:{a.rld:.2f}:{a.rlc:.2f}:{a.tsd:.2f}:{a.tsc:.2f}".encode("utf-8"))
+        fp = h.hexdigest()
+        try:
+            object.__setattr__(bal, "_amprenta", fp)
+        except Exception:
+            pass
+    digest = hashlib.sha256(f"{fp}|{salt}".encode("utf-8")).hexdigest()
     return int(digest[:12], 16)
 
 
